@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Data & Large Files (Keep raw jsonl out of git tracking to preserve repo performance)
+data/raw/fever/*.jsonl
+data/processed/*.jsonl
+data/wiki_corpus/*
+!data/wiki_corpus/.gitkeep
+!data/processed/.gitkeep
+!data/raw/fever/.gitkeep
+
+# Cache & Storage
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.sqlite
+*.db
+outputs/
+logs/
+checkpoints/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
