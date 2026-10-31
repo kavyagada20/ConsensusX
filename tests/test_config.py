@@ -1,6 +1,6 @@
 """Unit tests for ConsensusX configuration and settings."""
 
-from consensus_x.config import Settings
+from src.config import Settings
 
 
 def test_default_settings():

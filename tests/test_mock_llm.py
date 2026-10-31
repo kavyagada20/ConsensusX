@@ -1,7 +1,7 @@
 """Unit tests for Mock LLM client."""
 
-from consensus_x.llm.mock import MockLLMClient
-from consensus_x.llm.base import LLMMessage
+from src.llm.mock import MockLLMClient
+from src.llm.base import LLMMessage
 
 
 def test_mock_llm_generate():

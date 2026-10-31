@@ -7,8 +7,10 @@ tqdm>=4.66.0
 pandas>=2.2.0
 numpy>=1.26.0
 
-# LLM Providers (API clients)
+# LLM Providers (Modern official Google Gen AI SDK)
+google-genai>=2.30.0
 google-generativeai>=0.8.0
+tenacity>=8.2.0
 httpx>=0.27.0
 requests>=2.31.0
 

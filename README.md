@@ -119,46 +119,64 @@ sequenceDiagram
 ```
 ConsensusX/
 ├── .env.example                     # Environment template (API keys, provider settings)
-├── .gitignore                        # Git ignore (ignores secrets, raw data, checkpoints)
-├── pyproject.toml                   # Modern Python packaging & pytest configuration
+├── .gitignore                        # Git ignore (secrets, raw datasets, cache, outputs)
+├── pyproject.toml                   # Python packaging & pytest configuration
 ├── requirements.txt                 # Project dependencies
-├── README.md                        # Research overview, architecture & documentation
-├── configs/                         # Experiment & system YAML configurations
+├── README.md                        # Master research documentation
+├── configs/
 │   └── default.yaml                 # Global parameters (providers, models, seeds, sample sizes)
 ├── data/                            # Research dataset directory
 │   ├── raw/
 │   │   └── fever/                   # Raw FEVER JSONL files (git-ignored)
 │   │       ├── train.jsonl          # 145,449 training claims
 │   │       └── shared_task_dev.jsonl# 19,998 dev claims (balanced 6,666 each class)
-│   ├── processed/                   # Deterministic, stratified test samples (e.g. dev_sample_300.jsonl)
+│   ├── processed/                   # Deterministic, stratified test samples & manifests
+│   │   ├── dev_sample_300.jsonl     # Balanced 300 claims (100 SUP / 100 REF / 100 NEI)
+│   │   └── dev_sample_300.manifest.json # Provenance manifest (seed, counts, claim IDs)
 │   └── wiki_corpus/                 # Wikipedia evidence corpus / prebuilt index
-├── consensus_x/                     # Core Python package
+├── src/                             # Core Python package
 │   ├── __init__.py                  # Package exports & version
 │   ├── config.py                    # Pydantic BaseSettings loading from environment
 │   ├── data/                        # FEVER schema models & streaming data loaders
 │   │   ├── __init__.py
-│   │   ├── schema.py                # FEVERRecord, FEVERLabel, ClaimVerificationOutput
-│   │   └── loader.py                # Streaming loader, stratified sampling & validation
+│   │   ├── schema.py                # FEVERRecord, FEVERLabel, ClaimVerificationOutput, Manifest
+│   │   └── loader.py                # Streaming loader, stratified sampling & leakage checker
 │   ├── llm/                         # Multi-provider LLM abstraction
 │   │   ├── __init__.py
 │   │   ├── base.py                  # BaseLLMClient interface & LLMResponse schema
-│   │   └── mock.py                  # Offline Mock client for zero-cost testing
+│   │   ├── mock.py                  # Offline Mock client for zero-cost testing
+│   │   ├── gemini.py                # Google Gen AI client with caching & error handling
+│   │   ├── pricing.py               # Token pricing table and USD cost calculation
+│   │   └── factory.py               # get_llm_client(provider, model, ...)
 │   ├── retrieval/                   # Evidence retrieval interface (Oracle & BM25)
 │   ├── agents/                      # Verifier, Debater, Adversarial, and Judge agents
-│   ├── pipeline/                    # Orchestrators for Baseline, Voting, Debate, ConsensusX
-│   ├── evaluation/                  # Metrics calculation (Accuracy, F1, FCR, AVS)
 │   │   ├── __init__.py
-│   │   └── metrics.py               # Classification metrics, False Consensus Rate, AVS
+│   │   └── single_agent.py          # SingleAgentVerifier with structured JSON reasoning
+│   ├── pipeline/                    # Orchestrators for Baseline, Voting, Debate, ConsensusX
+│   │   ├── __init__.py
+│   │   └── baseline.py              # BaselinePipeline orchestrator & reporting
+│   ├── evaluation/                  # Metrics calculation (Accuracy, F1, Confusion Matrix, Abstention)
+│   │   ├── __init__.py
+│   │   └── metrics.py               # Accuracy, Macro-F1, Confusion Matrix, Abstention Metrics
 │   └── utils/                       # Structured logging, disk caching, serialization
 │       ├── __init__.py
 │       └── logging.py
+├── scripts/                         # Runnable CLI scripts
+│   ├── prepare_data_sample.py       # Stratified sampling & provenance manifest generator
+│   └── run_baseline.py              # Single-Agent Baseline runner with reporting
 ├── tests/                           # Automated unit & integration tests
 │   ├── __init__.py
 │   ├── test_config.py               # Settings & configuration test
-│   ├── test_data_schema_and_loader.py# FEVER schemas and loader tests
-│   ├── test_mock_llm.py             # Mock LLM test
-│   └── test_metrics.py              # Metrics and FCR computation tests
+│   ├── test_data_schema_and_loader.py# FEVER schemas, labels, & streaming tests
+│   ├── test_split_integrity.py      # Split integrity & data leakage prevention tests
+│   ├── test_gemini_client.py         # Mocked Gemini client & cache tests
+│   ├── test_pricing.py              # Token cost calculation tests
+│   ├── test_metrics.py              # Metrics, confusion matrix, & abstention tests
+│   ├── test_mock_llm.py             # Mock LLM generation & chat tests
+│   ├── test_sample_generation.py    # Stratified sampling determinism tests
+│   └── test_single_agent_baseline.py# SingleAgentVerifier & BaselinePipeline tests
 └── outputs/                         # Benchmark outputs, logs, and artifacts (git-ignored)
+    └── baseline_results.json        # Single-Agent Baseline predictions & summary
 ```
 
 ---
@@ -169,112 +187,71 @@ ConsensusX/
 | :--- | :--- | :--- |
 | **Label Accuracy** | $\frac{N_{\text{correct labels}}}{N_{\text{total evaluated}}}$ | Basic classification performance across 3 classes. |
 | **Macro-F1** | Unweighted mean of F1 scores across `SUPPORTS`, `REFUTES`, and `NOT ENOUGH INFO`. | Accounts for class balance and penalizes majority bias. |
-| **FEVER Score** | Label must be correct **AND** at least one complete gold evidence set must be retrieved/cited. | Strict factual verification standard from the FEVER benchmark. |
+| **Confusion Matrix** | 3x3 contingency matrix (Ground Truth vs. Predicted). | Diagnoses systematic directional errors (e.g. true REFUTES classified as SUPPORTS). |
+| **Abstention Rate** | Proportion of claims predicted as `NOT ENOUGH INFO`. | Measures model willingness to refrain from guessing under uncertainty. |
+| **Decided Accuracy** | Accuracy computed exclusively on claims where a definitive verdict was returned. | Evaluates precision on high-confidence assertions. |
+| **False Certainty Rate** | Proportion of true `NOT ENOUGH INFO` claims where the model falsely hallucinated certainty. | Quantifies overconfidence and hallucination susceptibility. |
 | **False Consensus Rate (FCR)** | $\frac{N_{\text{consensus on incorrect verdict}}}{N_{\text{total evaluated}}}$ | Measures frequency of multi-agent groupthink and unwarranted consensus. |
 | **Adversarial Vulnerability Score (AVS)** | $\text{Accuracy}_{\text{clean}} - \text{Accuracy}_{\text{adversarial}}$ | Quantifies performance drop when an adversarial agent is introduced. |
-| **Adversarial Flip Rate (AFR)** | $\frac{N_{\text{claims flipped from correct to incorrect}}}{N_{\text{clean correct claims}}}$ | Directly isolates adversarial deception effectiveness. |
-| **Token & Latency Efficiency** | Prompt/completion tokens and wall-clock execution time per claim. | Evaluates computational feasibility and deployment cost. |
+| **Token & Cost Efficiency** | Prompt/completion tokens, latency, and estimated USD cost per claim. | Evaluates computational feasibility and deployment cost. |
 
 ---
 
 ## 6. Implementation Roadmap & Acceptance Criteria
 
-### Phase 1: FEVER Dataset Preparation & Data Infrastructure
-- **Objective**: Standardize FEVER data loading, validation, and stratified sampling.
-- **Acceptance Criteria**:
-  - `FEVERRecord` schema validates all fields (`id`, `claim`, `label`, `verifiable`, `evidence`).
-  - Streaming reader handles large files without excessive memory consumption.
-  - Reproducible sampling produces balanced subsets (100 / 300 / 1000 claims) using fixed seeds.
-  - Unit tests verify schema compliance and label normalization.
+### Phase 1: FEVER Dataset Preparation & Data Infrastructure [COMPLETE]
+- Validated Pydantic models for `FEVERRecord` and `DatasetManifest`.
+- Memory-safe streaming reader handling large files without memory exhaustion.
+- Reproducible stratified sampling producing balanced 300-claim dev sets (`100/100/100`).
+- Automated split integrity checks ensuring zero data leakage (`check_data_leakage`).
+- Strict prohibition of silent evidence fabrication when evidence is absent.
 
-### Phase 2: Single-Agent Baseline & LLM Abstraction
-- **Objective**: Build the LLM provider interface and single-agent baseline verifier.
-- **Acceptance Criteria**:
-  - `BaseLLMClient` supports Mock, Gemini, and OpenAI backends with token and latency tracking.
-  - Single-agent prompt achieves structured JSON verdict (`SUPPORTS`, `REFUTES`, `NOT ENOUGH INFO`).
-  - Baseline evaluation pipeline generates reproducible metrics on a 300-claim dev sample.
-  - Test suite executes end-to-end without requiring network connectivity or API keys.
+### Phase 2: Single-Agent Baseline & Modern LLM Integration [COMPLETE]
+- Modern `google-genai` SDK integration with persistent disk caching.
+- `MockLLMClient` with zero-cost offline test harness.
+- `SingleAgentVerifier` enforcing structured JSON outputs (`predicted_label`, `confidence`, `reasoning`, `cited_evidence`).
+- Robust fallback mechanism for malformed outputs and API exceptions.
+- Accurate token tracking, latency timing, and USD cost estimation.
+- 3x3 confusion matrix and epistemic abstention analysis.
 
-### Phase 3: Multi-Agent Independent Reasoning & Majority Voting
-- **Objective**: Implement independent parallel reasoning agents with voting aggregation.
-- **Acceptance Criteria**:
-  - Orchestrator executes $N$ agents (default $N=3$) independently per claim.
-  - Deterministic aggregation logic computes majority vote and logs split decisions.
-  - Baseline comparison reports Accuracy, Macro-F1, and False Consensus Rate.
+### Phase 3: Multi-Agent Independent Reasoning & Majority Voting [NEXT]
+- Orchestrator executing $N=3$ agents independently per claim.
+- Deterministic voting aggregator handling ties and split decisions.
+- Measuring accuracy changes and baseline False Consensus Rate (FCR).
 
-### Phase 4: Structured Multi-Agent Debate
-- **Objective**: Implement multi-round conversational debate with a meta-judge.
-- **Acceptance Criteria**:
-  - Configurable multi-turn debate (Opening arguments $\to$ Cross-examination $\to$ Closing).
-  - Complete debate transcript recording with turn-by-turn agent arguments.
-  - Neutral meta-judge analyzes transcripts to render a final verdict.
-  - Measurement of agent opinion shifts and sycophancy patterns during debate.
+### Phase 4: Structured Multi-Agent Debate [PLANNED]
+- Configurable multi-turn debate (Opening arguments $\to$ Cross-examination $\to$ Closing).
+- Full debate transcript recording with turn-by-turn arguments.
+- Neutral meta-judge analyzing transcripts to render final verdicts.
 
-### Phase 5: Retrieval-Augmented Generation (RAG) & Evidence Grounding
-- **Objective**: Integrate passage retrieval and strict citation requirements.
-- **Acceptance Criteria**:
-  - Dual retriever interfaces: Oracle retriever (gold evidence) and BM25 sparse retriever.
-  - Structured prompt enforcement requiring sentence-level citations (`[Title:SentID]`).
-  - Automated citation checker verifies that cited statements exist in the retrieved passages.
+### Phase 5: RAG & Evidence Grounding [PLANNED]
+- Dual retriever interfaces: Oracle retriever (gold evidence) and BM25 sparse retriever.
+- Strict citation enforcement (`[DocTitle:SentID]`).
+- Automated citation checker verifying that cited statements exist in retrieved passages.
 
-### Phase 6: Evidence-Based Judging & Conflict Resolution (ConsensusX Core)
-- **Objective**: Construct the evidence-auditing judge that resolves conflicting agent arguments.
-- **Acceptance Criteria**:
-  - Judge audits cited passages against argument claims; ungrounded assertions are discarded.
-  - Contradictory debater claims trigger an evidence sufficiency test.
-  - Inconclusive or unsubstantiated debates correctly fall back to `NOT ENOUGH INFO`.
-  - Significant reduction in hallucinated consensus compared to standard debate.
+### Phase 6: Evidence-Based Judging (ConsensusX Core) [PLANNED]
+- Judge audits cited passages against argument claims; ungrounded assertions discarded.
+- Contradictory debater claims trigger an evidence sufficiency test.
+- Inconclusive or unsubstantiated debates correctly fall back to `NOT ENOUGH INFO`.
 
-### Phase 7: Controlled Adversarial-Agent Experiments
-- **Objective**: Stress-test Configurations 2, 3, and 4 against targeted adversarial deception.
-- **Acceptance Criteria**:
-  - Adversarial agent personas implemented (persuasive contrarian, subtle citation distorter, sycophant).
-  - Automated test harness injects 1 adversary into $N$-agent teams.
-  - Adversarial Vulnerability Score (AVS) and Adversarial Flip Rate measured across Configurations 2, 3, and 4.
-  - Proof that ConsensusX significantly lowers AVS compared to standard debate and majority voting.
+### Phase 7: Controlled Adversarial-Agent Experiments [PLANNED]
+- Adversarial agent personas implemented (persuasive contrarian, citation distorter).
+- Automated test harness injecting 1 adversary into $N$-agent teams.
+- Measuring Adversarial Vulnerability Score (AVS) across Configurations 2, 3, and 4.
 
-### Phase 8: Comprehensive Evaluation, Error Analysis & Reproducibility
-- **Objective**: Generate benchmark comparison tables, confusion matrices, and research reports.
-- **Acceptance Criteria**:
-  - One-click script executes the complete benchmark across all configurations.
-  - Markdown, CSV, and LaTeX export of all research metrics.
-  - Detailed error analysis categorizing failure modes (retrieval error, reasoning error, judge error).
-
-### Phase 9: Optional Research Dashboard
-- **Objective**: Interactive web interface for visualizing debates and results.
-- **Acceptance Criteria**:
-  - Streamlit application displaying side-by-side debate transcripts, citation graphs, and judge decisions.
-  - Interactive claim tester allowing user-submitted claims and custom adversarial injections.
+### Phase 8: Comprehensive Evaluation & Reporting [PLANNED]
+- One-click benchmark runner executing all 4 configurations.
+- Automatic generation of Markdown, CSV, and LaTeX comparison tables.
 
 ---
 
-## 7. Risk Analysis & Mitigations
+## 7. Quickstart & Setup Guide
 
-1. **Retrieval Quality Bottleneck**:
-   - *Risk*: Poor retrieval returns irrelevant passages, causing honest agents to fail or default to `NOT ENOUGH INFO`.
-   - *Mitigation*: Support an **Oracle Retriever** (using FEVER gold evidence) to isolate multi-agent reasoning dynamics from retrieval noise, alongside BM25/Dense retrieval.
-2. **Judge Biases (Position & Authority Bias)**:
-   - *Risk*: The judge LLM may favor the last debater who spoke or debaters with more assertive writing styles.
-   - *Mitigation*: Anonymize debater identities, permute argument presentation order, and enforce an objective citation auditing rubric.
-3. **API Cost and Rate Limiting**:
-   - *Risk*: Multi-agent multi-round debates on 20,000 claims would incur high API expenses and rate-limiting issues.
-   - *Mitigation*: Standardize on statistically representative stratified subsets (100 for dev, 300 for testing, 1,000 for final benchmark); integrate local disk caching for all LLM calls; provide an offline Mock LLM for zero-cost CI testing.
-4. **Data Leakage & Pretraining Memorization**:
-   - *Risk*: Frontier LLMs may have memorized some FEVER claims during pretraining.
-   - *Mitigation*: Evaluate specifically on claims where common misconceptions contradict evidence; evaluate robustness under adversarial counter-evidence.
-5. **Licensing & Usage**:
-   - *Risk*: FEVER is distributed under CC BY-SA 4.0; Wikipedia text is under CC BY-SA 3.0.
-   - *Mitigation*: Adhere to non-commercial academic research guidelines, properly cite Thorne et al. (NAACL 2018), and avoid tracking raw data dumps in Git.
-
----
-
-## 8. Quickstart & Setup Guide
-
-### Prerequisites
+### 1. Prerequisites
 - Python 3.10+ (tested on Python 3.13)
-- Git
+- Windows / macOS / Linux
 
-### 1. Installation
+### 2. Installation
 Clone the repository and install dependencies:
 ```bash
 git clone <repo-url>
@@ -282,30 +259,56 @@ cd ConsensusX
 pip install -r requirements.txt
 ```
 
-### 2. Environment Configuration
-Copy `.env.example` to `.env` and configure your API keys:
+### 3. Environment Configuration
+Copy `.env.example` to `.env` and set your preferred configuration:
 ```bash
 cp .env.example .env
 ```
-Edit `.env` with your preferred settings:
+Edit `.env`:
 ```ini
-DEFAULT_LLM_PROVIDER=gemini       # Options: mock, gemini, openai
-GEMINI_API_KEY=your_actual_key
-DEFAULT_SAMPLE_SIZE=300
+DEFAULT_LLM_PROVIDER=gemini       # Options: mock, gemini
+DEFAULT_LLM_MODEL=gemini-2.0-flash
+GEMINI_API_KEY=your_actual_key_here
 ENABLE_LLM_CACHE=true
 ```
 
-### 3. Run Automated Tests
-ConsensusX includes a test suite that runs offline without requiring paid API credentials:
+### 4. Step A: Prepare the Balanced Dataset Sample
+Generate a balanced, stratified 300-claim development sample with an automated provenance manifest:
+```bash
+python scripts/prepare_data_sample.py --sample-size 300 --seed 42
+```
+To verify that the evaluation sample has zero data leakage against the training split:
+```bash
+python scripts/prepare_data_sample.py --check-leakage-against data/raw/fever/train.jsonl
+```
+
+### 5. Step B: Run the Single-Agent Baseline
+
+#### Offline / Mock Mode (Zero Cost):
+Run pipeline verification without network calls or API charges:
+```bash
+python scripts/run_baseline.py --provider mock --limit 10
+```
+> **Important Research Note**: Mock mode generates simulated responses to validate data ingestion, schema parsing, and metric aggregation. Mock results must **never** be cited as real LLM empirical performance.
+
+#### Live Google Gemini Mode:
+Execute inference against the live Google Gemini API (requires `GEMINI_API_KEY` in `.env`):
+```bash
+python scripts/run_baseline.py --provider gemini --model gemini-2.0-flash --limit 300
+```
+Output results, confusion matrix, token costs, and claim-level predictions are automatically saved to `outputs/baseline_results.json`.
+
+### 6. Run Automated Tests
+Execute the full test suite offline:
 ```bash
 python -m pytest
 ```
 
 ---
 
-## 9. Citation & Attribution
+## 8. Citation & Attribution
 
-If you build upon or reference ConsensusX, please cite:
+If you reference or build upon ConsensusX, please cite:
 ```bibtex
 @misc{consensusx2026,
   title={ConsensusX: Adversarial Reasoning and Multi-Agent Conflict Resolution in AI Systems},
@@ -323,4 +326,3 @@ And the FEVER dataset:
   year = "2018"
 }
 ```
-
