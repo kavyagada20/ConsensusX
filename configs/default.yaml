@@ -15,8 +15,9 @@ data:
     - NOT ENOUGH INFO
 
 llm:
-  provider: "gemini"
-  model: "gemini-1.5-flash"
+  # Supported providers: "mock", "gemini", "xai"
+  provider: "mock"
+  model: "gemini-2.0-flash"  # For xAI use: "grok-2" or "grok-4.7"
   temperature: 0.0
   max_tokens: 1024
   timeout_seconds: 30

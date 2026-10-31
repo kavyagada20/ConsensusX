@@ -29,20 +29,20 @@ def main() -> None:
         "--provider",
         type=str,
         default="mock",
-        choices=["mock", "gemini"],
-        help="LLM provider: 'mock' for zero-cost offline testing, 'gemini' for live API."
+        choices=["mock", "gemini", "xai", "grok"],
+        help="LLM provider: 'mock' for zero-cost offline testing, 'gemini' or 'xai' for live API."
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="Model ID (e.g. gemini-2.0-flash, gemini-1.5-flash)."
+        help="Model ID (e.g. gemini-2.0-flash, grok-2, grok-2-1212)."
     )
     parser.add_argument(
         "--api-key",
         type=str,
         default=None,
-        help="Optional API key (defaults to GEMINI_API_KEY from .env)."
+        help="Optional API key (defaults to GEMINI_API_KEY or XAI_API_KEY from .env)."
     )
     parser.add_argument(
         "--prompt-version",

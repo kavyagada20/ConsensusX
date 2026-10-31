@@ -22,10 +22,12 @@ class Settings(BaseSettings):
     random_seed: int = 42
 
     # LLM Settings
-    default_llm_provider: str = Field(default="mock", description="mock, gemini, or openai")
+    default_llm_provider: str = Field(default="mock", description="mock, gemini, xai, or openai")
     default_llm_model: str = "gemini-1.5-flash"
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    xai_api_key: Optional[str] = None
+    xai_base_url: str = "https://api.x.ai/v1"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1024
     llm_request_timeout: int = 30

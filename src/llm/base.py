@@ -17,7 +17,7 @@ class LLMResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    estimated_cost_usd: float = 0.0
+    estimated_cost_usd: Optional[float] = 0.0
     latency_seconds: float = 0.0
     model: str = ""
     provider: str = ""
