@@ -262,14 +262,29 @@ class EvidenceJudgeAgent:
     def _parse_json(self, raw_content: str) -> Dict[str, Any]:
         """Safely parses JSON response from LLM."""
         content = raw_content.strip()
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
         if fence_match:
             content = fence_match.group(1).strip()
         else:
             brace_match = re.search(r"\{.*\}", content, re.DOTALL)
             if brace_match:
                 content = brace_match.group(0).strip()
-        return json.loads(content)
+        try:
+            return json.loads(content)
+        except Exception:
+            label_match = re.search(r'"(?:predicted_label|verdict)"\s*:\s*"([^"]+)"', content, re.IGNORECASE)
+            pred_label = label_match.group(1) if label_match else "NOT ENOUGH INFO"
+            conf_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', content)
+            conf = float(conf_match.group(1)) if conf_match else 0.5
+            rat_match = re.search(r'"(?:rationale|reasoning)"\s*:\s*"([^"]+)"', content)
+            rat = rat_match.group(1) if rat_match else content[:200]
+            return {
+                "predicted_label": pred_label,
+                "confidence": conf,
+                "rationale": rat,
+                "cited_evidence": [],
+                "evidence_status": "insufficient"
+            }
 
     def evaluate(
         self,

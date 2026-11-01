@@ -5,7 +5,8 @@ from typing import Dict, Optional, Tuple
 # Pricing in USD per 1,000,000 tokens: (input_price_per_1m, output_price_per_1m)
 # Only verified official rates are included. Unverified models must return None (unavailable).
 MODEL_PRICING_PER_MILLION: Dict[str, Tuple[float, float]] = {
-    # Google Gemini 2.0
+    # Google Gemini 2.5 & 2.0
+    "gemini-2.5-flash": (0.10, 0.40),
     "gemini-2.0-flash": (0.10, 0.40),
     "gemini-2.0-flash-exp": (0.00, 0.00),  # Experimental preview tier
     # Google Gemini 1.5

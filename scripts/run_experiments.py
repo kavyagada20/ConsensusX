@@ -129,6 +129,13 @@ def main() -> None:
         default="data/processed/dev_corpus.jsonl",
         help="Path to evidence corpus JSONL (for oracle retriever or embedding)."
     )
+    parser.add_argument(
+        "--embedding-provider",
+        type=str,
+        default="mock",
+        choices=["mock", "gemini", "sentence_transformer"],
+        help="Embedding provider used for the FAISS index (default: mock)."
+    )
 
     args = parser.parse_args()
 
@@ -169,7 +176,7 @@ def main() -> None:
         from src.retrieval.retriever import FAISSRetriever
         from src.retrieval.vector_store import FAISSVectorStore
 
-        emb_model = get_embedding_model(provider="mock" if args.provider == "mock" else "gemini")
+        emb_model = get_embedding_model(provider=args.embedding_provider)
         vector_store = FAISSVectorStore.load(args.index_dir, embedding_model=emb_model)
         evidence_retriever = FAISSRetriever(vector_store=vector_store)
         logger.info("Initialized FAISSRetriever from %s", args.index_dir)

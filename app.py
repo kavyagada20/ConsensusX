@@ -148,7 +148,7 @@ else:
 
 model_name: Optional[str] = None
 if provider_choice == "gemini":
-    model_name = st.sidebar.selectbox("Gemini Model:", ["gemini-2.0-flash", "gemini-2.5-flash"], index=0)
+    model_name = st.sidebar.selectbox("Gemini Model:", ["gemini-2.5-flash", "gemini-1.5-flash"], index=0)
 elif provider_choice == "xai":
     model_name = st.sidebar.selectbox("xAI Model:", ["grok-2", "grok-beta"], index=0)
 

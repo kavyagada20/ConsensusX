@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -91,7 +92,7 @@ class GeminiLLMClient(BaseLLMClient):
         self,
         prompt: str,
         system_instruction: Optional[str] = None,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
         prompt_version: str = "v1.0.0",
         **kwargs: Any
     ) -> LLMResponse:
@@ -107,53 +108,72 @@ class GeminiLLMClient(BaseLLMClient):
         config = types.GenerateContentConfig(
             temperature=self.temperature,
             max_output_tokens=max_tokens,
-            system_instruction=system_instruction
+            system_instruction=system_instruction,
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
         )
 
-        start_time = time.perf_counter()
-        try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config
-            )
-            latency = time.perf_counter() - start_time
+        max_retries = 3
+        for attempt in range(max_retries):
+            start_time = time.perf_counter()
+            try:
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config
+                )
+                latency = time.perf_counter() - start_time
 
-            content = response.text or ""
-            prompt_tokens = 0
-            completion_tokens = 0
-            total_tokens = 0
+                content = response.text or ""
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
 
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
-                completion_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
-                total_tokens = getattr(response.usage_metadata, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+                    completion_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+                    total_tokens = getattr(response.usage_metadata, "total_token_count", 0) or (prompt_tokens + completion_tokens)
 
-            cost = calculate_cost(
-                model_name=self.model_name,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                provider="gemini"
-            )
+                cost = calculate_cost(
+                    model_name=self.model_name,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    provider="gemini"
+                )
 
-            llm_response = LLMResponse(
-                content=content,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                estimated_cost_usd=cost,
-                latency_seconds=round(latency, 4),
-                model=self.model_name,
-                provider="gemini",
-                prompt_version=prompt_version
-            )
+                llm_response = LLMResponse(
+                    content=content,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost_usd=cost,
+                    latency_seconds=round(latency, 4),
+                    model=self.model_name,
+                    provider="gemini",
+                    prompt_version=prompt_version
+                )
 
-            self._save_cached_response(cache_key, llm_response)
-            return llm_response
+                self._save_cached_response(cache_key, llm_response)
+                return llm_response
 
-        except Exception as e:
-            logger.error("Gemini API error during generation: %s", e)
-            raise
+            except Exception as e:
+                err_str = str(e)
+                if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < max_retries - 1:
+                    delay = 16.0
+                    match = re.search(r"retry in ([\d\.]+)s", err_str)
+                    if match:
+                        try:
+                            delay = float(match.group(1)) + 1.0
+                        except Exception:
+                            delay = 16.0
+                    logger.warning(
+                        "Gemini rate limit (429 RESOURCE_EXHAUSTED) hit on Free Tier. "
+                        "Backing off for %.1f seconds before retry (attempt %d/%d)...",
+                        delay, attempt + 1, max_retries
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error("Gemini API error during generation: %s", e)
+                raise
 
     def chat(
         self,
