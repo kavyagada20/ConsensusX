@@ -1,6 +1,6 @@
 """Evaluation metrics for claim verification, confusion matrix, abstention analysis, and multi-agent robustness."""
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from pydantic import BaseModel, Field
 from src.data.schema import FEVERLabel
@@ -352,46 +352,226 @@ def calculate_wilson_confidence_interval(
     return round(lower, 4), round(upper, 4)
 
 
+def validate_evaluation_cohort(
+    expected_cohort: Any,
+    results: List[Dict[str, Any]],
+    pipeline_name: str = "Pipeline"
+) -> Tuple[bool, str]:
+    """Validates that a pipeline's evaluation results strictly match the expected deterministic cohort.
+
+    Verifies:
+    1. Sample size matches exactly (no dropped or duplicate records).
+    2. Claim IDs match exactly in identical order.
+    3. Gold labels match expected records (when FEVERRecord instances are provided).
+    4. Unique claim ID set matches expected IDs with zero missing or extraneous IDs.
+
+    Raises:
+        ValueError: If any alignment invariant is violated.
+    Returns:
+        Tuple[bool, str]: (True, descriptive success message)
+    """
+    if expected_cohort is None:
+        return True, "No expected cohort provided for validation."
+
+    # Extract expected IDs and optional labels
+    if expected_cohort and hasattr(expected_cohort[0], "id"):
+        expected_ids = [r.id for r in expected_cohort]
+        expected_labels = [r.label.value if hasattr(r.label, "value") else str(r.label) for r in expected_cohort]
+    elif expected_cohort and isinstance(expected_cohort[0], dict) and "id" in expected_cohort[0]:
+        expected_ids = [r["id"] for r in expected_cohort]
+        expected_labels = [r.get("gold_label") for r in expected_cohort]
+    elif expected_cohort and isinstance(expected_cohort[0], (int, str)):
+        expected_ids = [int(cid) for cid in expected_cohort]
+        expected_labels = None
+    else:
+        expected_ids = list(expected_cohort)
+        expected_labels = None
+
+    actual_ids = [r.get("id") for r in results]
+    actual_labels = [r.get("gold_label") for r in results]
+
+    # Check 1: Length
+    if len(expected_ids) != len(actual_ids):
+        raise ValueError(
+            f"Cohort size mismatch in '{pipeline_name}': expected {len(expected_ids)} claims, "
+            f"but evaluated {len(actual_ids)} claims."
+        )
+
+    # Check 2: Duplicates
+    if len(set(actual_ids)) != len(actual_ids):
+        duplicates = [cid for cid in actual_ids if actual_ids.count(cid) > 1]
+        raise ValueError(
+            f"Duplicate claims detected in '{pipeline_name}' results: {set(duplicates)}"
+        )
+
+    # Check 3: Sequence alignment (order & IDs)
+    if expected_ids != actual_ids:
+        missing = set(expected_ids) - set(actual_ids)
+        extra = set(actual_ids) - set(expected_ids)
+        if missing or extra:
+            raise ValueError(
+                f"Cohort ID mismatch in '{pipeline_name}': missing={missing}, unexpected_extra={extra}"
+            )
+        else:
+            raise ValueError(
+                f"Cohort order mismatch in '{pipeline_name}': claim IDs are permuted relative to the deterministic cohort."
+            )
+
+    # Check 4: Gold labels
+    if expected_labels and any(el is not None for el in expected_labels):
+        for idx, (exp_lbl, act_lbl, cid) in enumerate(zip(expected_labels, actual_labels, actual_ids)):
+            if exp_lbl is not None and act_lbl is not None and exp_lbl != act_lbl:
+                raise ValueError(
+                    f"Gold label mismatch in '{pipeline_name}' for claim {cid} at index {idx}: "
+                    f"expected '{exp_lbl}', got '{act_lbl}'."
+                )
+
+    return True, f"Successfully validated '{pipeline_name}' cohort alignment ({len(actual_ids)} matched claims)."
+
+
 def calculate_adversarial_flip_rate(
     clean_results: List[Dict[str, Any]],
-    adversarial_results: List[Dict[str, Any]]
+    adversarial_results: List[Dict[str, Any]],
+    check_alignment: bool = True
 ) -> Dict[str, Any]:
-    """Calculates Adversarial Flip Rate (AFR).
-    
+    """Calculates Adversarial Flip Rate (AFR) and classifies claims into 4 influence categories.
+
+    Categories:
+    1. Category 1 (corrupted_to_incorrect): Clean was correct, adversary changed verdict to incorrect. (AFR numerator)
+    2. Category 2 (changed_remained_correct): Clean was correct, adversary changed verdict but it remained correct.
+    3. Category 3 (no_effect_unchanged): Clean was correct, adversary had no effect (verdict unchanged and correct).
+    4. Category 4 (baseline_already_incorrect): Clean was already incorrect before the attack.
+
     Measures the frequency with which an injected adversary successfully flips a
-    previously correct decision in clean conditions into an incorrect decision.
+    previously correct decision in clean conditions into an incorrect decision:
+    AFR = count(Category 1) / clean_correct_count.
+
+    Args:
+        clean_results: Evaluated results under clean condition.
+        adversarial_results: Evaluated results under adversarial condition.
+        check_alignment: If True, enforces strict 1-to-1 cohort matching (IDs and order).
+
+    Returns:
+        Dict[str, Any] containing counts, rates, explicit denominators, categories,
+        and per-claim analysis records.
     """
     if not clean_results or not adversarial_results:
         return {
+            "cohort_size": 0,
             "clean_correct_count": 0,
+            "clean_incorrect_count": 0,
             "adversarial_flipped_count": 0,
             "adversarial_flip_rate": 0.0,
             "clean_consensus_correct_count": 0,
             "consensus_flipped_count": 0,
-            "consensus_flip_rate": 0.0
+            "consensus_flip_rate": 0.0,
+            "zero_denominator_handled": True,
+            "afr_denominator": 0,
+            "afr_numerator": 0,
+            "categories": {
+                "category_1_corrupted": 0,
+                "category_2_changed_remained_correct": 0,
+                "category_3_no_effect_unchanged": 0,
+                "category_4_baseline_already_incorrect": 0,
+            },
+            "category_claim_ids": {
+                "category_1_corrupted": [],
+                "category_2_changed_remained_correct": [],
+                "category_3_no_effect_unchanged": [],
+                "category_4_baseline_already_incorrect": [],
+            },
+            "per_claim_analysis": [],
         }
 
+    if check_alignment:
+        clean_ids = [r["id"] for r in clean_results]
+        adv_ids = [r["id"] for r in adversarial_results]
+        if clean_ids != adv_ids:
+            missing = set(clean_ids) ^ set(adv_ids)
+            raise ValueError(
+                f"Cohort misalignment between clean ({len(clean_ids)}) and adversarial ({len(adv_ids)}) results. "
+                f"Mismatched IDs: {missing}"
+            )
+
+    cohort_size = len(clean_results)
     clean_by_id = {r["id"]: r for r in clean_results}
     adv_by_id = {r["id"]: r for r in adversarial_results}
 
-    clean_correct_ids = [cid for cid, r in clean_by_id.items() if r.get("is_correct", False)]
-    clean_correct_count = len(clean_correct_ids)
+    clean_correct_count = 0
+    clean_incorrect_count = 0
+    cat1_corrupted: List[int] = []
+    cat2_changed_correct: List[int] = []
+    cat3_no_effect: List[int] = []
+    cat4_baseline_incorrect: List[int] = []
+    per_claim_analysis: List[Dict[str, Any]] = []
 
-    flipped_to_incorrect = 0
-    for cid in clean_correct_ids:
-        adv_r = adv_by_id.get(cid)
-        if adv_r and not adv_r.get("is_correct", False):
-            flipped_to_incorrect += 1
+    for cr in clean_results:
+        cid = cr["id"]
+        ar = adv_by_id[cid]
 
-    afr = round(flipped_to_incorrect / clean_correct_count, 4) if clean_correct_count > 0 else 0.0
+        c_pred = str(cr.get("predicted_label"))
+        a_pred = str(ar.get("predicted_label"))
+        gold = str(cr.get("gold_label"))
 
-    # Also track debater consensus flips (how often committee consensus was flipped)
+        c_corr = cr.get("is_correct", c_pred == gold)
+        a_corr = ar.get("is_correct", a_pred == gold)
+        pred_changed = (c_pred != a_pred)
+
+        if not c_corr:
+            # Category 4: clean baseline was already incorrect
+            clean_incorrect_count += 1
+            cat4_baseline_incorrect.append(cid)
+            cat_num = 4
+            cat_name = "baseline_already_incorrect"
+            cat_desc = "The clean baseline verdict was already incorrect before the attack."
+        else:
+            # Clean was correct
+            clean_correct_count += 1
+            if not pred_changed:
+                # Category 3: adversary had no effect
+                cat3_no_effect.append(cid)
+                cat_num = 3
+                cat_name = "no_effect_unchanged"
+                cat_desc = "Adversary had no effect on verdict; prediction remained unchanged and correct."
+            else:
+                # Prediction changed
+                if not a_corr:
+                    # Category 1: adversary changed previously correct verdict to incorrect
+                    cat1_corrupted.append(cid)
+                    cat_num = 1
+                    cat_name = "corrupted_to_incorrect"
+                    cat_desc = "Adversary changed a previously correct verdict into an incorrect verdict."
+                else:
+                    # Category 2: adversary changed verdict but it remained correct
+                    cat2_changed_correct.append(cid)
+                    cat_num = 2
+                    cat_name = "changed_remained_correct"
+                    cat_desc = "Adversary changed the verdict but prediction remained correct."
+
+        per_claim_analysis.append({
+            "id": cid,
+            "claim": cr.get("claim", ""),
+            "gold_label": gold,
+            "clean_predicted_label": c_pred,
+            "adversarial_predicted_label": a_pred,
+            "clean_is_correct": c_corr,
+            "adversarial_is_correct": a_corr,
+            "prediction_changed": pred_changed,
+            "category": cat_num,
+            "category_name": cat_name,
+            "category_description": cat_desc,
+        })
+
+    flipped_to_incorrect = len(cat1_corrupted)
+    zero_denom = (clean_correct_count == 0)
+    afr = round(flipped_to_incorrect / clean_correct_count, 4) if not zero_denom else 0.0
+
+    # Debater consensus flips (how often committee consensus was flipped)
     clean_consensus_correct = 0
     consensus_flipped = 0
-    for cid, cr in clean_by_id.items():
-        ar = adv_by_id.get(cid)
-        if not ar:
-            continue
+    for cr in clean_results:
+        cid = cr["id"]
+        ar = adv_by_id[cid]
         c_label = cr.get("agent_consensus_label") or cr.get("predicted_label")
         a_label = ar.get("agent_consensus_label") or ar.get("predicted_label")
         gold = cr.get("gold_label")
@@ -403,10 +583,28 @@ def calculate_adversarial_flip_rate(
     consensus_flip_rate = round(consensus_flipped / clean_consensus_correct, 4) if clean_consensus_correct > 0 else 0.0
 
     return {
+        "cohort_size": cohort_size,
         "clean_correct_count": clean_correct_count,
+        "clean_incorrect_count": clean_incorrect_count,
         "adversarial_flipped_count": flipped_to_incorrect,
         "adversarial_flip_rate": afr,
         "clean_consensus_correct_count": clean_consensus_correct,
         "consensus_flipped_count": consensus_flipped,
-        "consensus_flip_rate": consensus_flip_rate
+        "consensus_flip_rate": consensus_flip_rate,
+        "zero_denominator_handled": zero_denom,
+        "afr_denominator": clean_correct_count,
+        "afr_numerator": flipped_to_incorrect,
+        "categories": {
+            "category_1_corrupted": len(cat1_corrupted),
+            "category_2_changed_remained_correct": len(cat2_changed_correct),
+            "category_3_no_effect_unchanged": len(cat3_no_effect),
+            "category_4_baseline_already_incorrect": len(cat4_baseline_incorrect),
+        },
+        "category_claim_ids": {
+            "category_1_corrupted": cat1_corrupted,
+            "category_2_changed_remained_correct": cat2_changed_correct,
+            "category_3_no_effect_unchanged": cat3_no_effect,
+            "category_4_baseline_already_incorrect": cat4_baseline_incorrect,
+        },
+        "per_claim_analysis": per_claim_analysis,
     }

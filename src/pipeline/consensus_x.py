@@ -340,6 +340,30 @@ class ConsensusXPipeline:
             reason = out.stopping_reason
             stopping_reasons_count[reason] = stopping_reasons_count.get(reason, 0) + 1
 
+            adv_details = None
+            if self.inject_adversary:
+                adv_id = f"debater_{self.adversary_idx + 1}"
+                adv_turns = [
+                    t for r_turns in out.transcript.rounds.values()
+                    for t in r_turns
+                    if t.agent_id == adv_id or (t.metadata or {}).get("is_adversarial")
+                ]
+                if adv_turns:
+                    adv_r1 = adv_turns[0]
+                    adv_target = adv_r1.predicted_label.value
+                    adv_citations = adv_r1.cited_evidence or []
+                    adv_details = {
+                        "agent_id": adv_id,
+                        "persona": (adv_r1.metadata or {}).get("adversary_persona", self.adversary_persona),
+                        "strength": (adv_r1.metadata or {}).get("attack_strength", self.adversary_strength),
+                        "target_label": adv_target,
+                        "r1_evidence": adv_r1.evidence,
+                        "r1_citations": adv_citations,
+                        "delivered_to_judge": True,
+                        "judge_rejected_adversary": (out.predicted_label.value != adv_target),
+                        "judge_cited_adversary_citations": any(c in out.judge_output.cited_evidence for c in adv_citations),
+                    }
+
             is_correct = (record.label == out.predicted_label)
             results.append({
                 "id": record.id,
@@ -353,6 +377,8 @@ class ConsensusXPipeline:
                 "rounds_used": out.rounds_used,
                 "agent_consensus_reached": out.agent_consensus_reached,
                 "agent_consensus_label": out.agent_consensus_label.value if out.agent_consensus_label else None,
+                "has_adversary": self.inject_adversary,
+                "adversary_details": adv_details,
                 "judge_rationale": out.judge_output.rationale,
                 "cited_evidence": out.judge_output.cited_evidence,
                 "valid_citations": out.judge_output.valid_citations,
@@ -408,6 +434,12 @@ class ConsensusXPipeline:
             "num_agents": self.num_agents,
             "max_rounds": self.max_rounds,
             "min_rounds": self.min_rounds,
+            "has_adversary": self.inject_adversary,
+            "adversary_persona": self.adversary_persona if self.inject_adversary else None,
+            "adversary_strength": self.adversary_strength if self.inject_adversary else None,
+            "adversary_idx": self.adversary_idx if self.inject_adversary else None,
+            "adversary_invocations_count": sum(1 for r in results if r.get("adversary_details")) if self.inject_adversary else 0,
+            "adversary_rejected_count": sum(1 for r in results if (r.get("adversary_details") or {}).get("judge_rejected_adversary", False)) if self.inject_adversary else 0,
             "total_samples": total,
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],

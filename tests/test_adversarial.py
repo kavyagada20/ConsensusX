@@ -251,3 +251,216 @@ def test_wilson_confidence_interval():
     assert lower_zero == 0.0
     assert upper_zero > 0.0
 
+
+# ==============================================================================
+# 6. COHORT VALIDATION & FAIRNESS ASSERTIONS
+# ==============================================================================
+
+def test_cohort_validation_exact_match_success(sample_supports_record, sample_refutes_record):
+    """Proves identical cohorts pass validation."""
+    from src.evaluation.metrics import validate_evaluation_cohort
+
+    cohort = [sample_supports_record, sample_refutes_record]
+    results = [
+        {"id": 501, "gold_label": "SUPPORTS", "predicted_label": "SUPPORTS"},
+        {"id": 502, "gold_label": "REFUTES", "predicted_label": "REFUTES"},
+    ]
+    ok, msg = validate_evaluation_cohort(cohort, results, "TestPipeline")
+    assert ok is True
+    assert "2 matched claims" in msg
+
+
+def test_cohort_validation_detects_mismatch_and_reordering(sample_supports_record, sample_refutes_record):
+    """Proves cohort mismatches, missing IDs, duplicates, permuted orders, and wrong labels raise ValueError."""
+    from src.evaluation.metrics import validate_evaluation_cohort
+
+    cohort = [sample_supports_record, sample_refutes_record]
+
+    # 1. Missing claim / count mismatch
+    with pytest.raises(ValueError, match="Cohort size mismatch"):
+        validate_evaluation_cohort(cohort, [{"id": 501, "gold_label": "SUPPORTS"}])
+
+    # 2. Duplicate claim IDs
+    with pytest.raises(ValueError, match="Duplicate claims detected"):
+        validate_evaluation_cohort(
+            cohort,
+            [
+                {"id": 501, "gold_label": "SUPPORTS"},
+                {"id": 501, "gold_label": "SUPPORTS"},
+            ]
+        )
+
+    # 3. Permuted order
+    with pytest.raises(ValueError, match="Cohort order mismatch"):
+        validate_evaluation_cohort(
+            cohort,
+            [
+                {"id": 502, "gold_label": "REFUTES"},
+                {"id": 501, "gold_label": "SUPPORTS"},
+            ]
+        )
+
+    # 4. Mismatched gold label
+    with pytest.raises(ValueError, match="Gold label mismatch"):
+        validate_evaluation_cohort(
+            cohort,
+            [
+                {"id": 501, "gold_label": "REFUTES"},  # Should be SUPPORTS
+                {"id": 502, "gold_label": "REFUTES"},
+            ]
+        )
+
+
+def test_clean_and_adversarial_differ_only_by_attack_setting(sample_supports_record):
+    """Proves clean and adversarial pipelines differ strictly by the injected adversary."""
+    client = MockLLMClient(default_verdict="SUPPORTS")
+
+    clean_pipe = MajorityVotingPipeline(llm_client=client, num_agents=3, inject_adversary=False)
+    adv_pipe = MajorityVotingPipeline(
+        llm_client=client,
+        num_agents=3,
+        inject_adversary=True,
+        adversary_idx=1,
+        adversary_persona="persuasive_contrarian",
+        adversary_strength="assertive"
+    )
+
+    clean_out = clean_pipe.evaluate_records([sample_supports_record])
+    adv_out = adv_pipe.evaluate_records([sample_supports_record])
+
+    # Both must process the exact same claim
+    assert clean_out["results"][0]["id"] == adv_out["results"][0]["id"] == sample_supports_record.id
+    # Agent 1 and Agent 3 are identical honest verifiers in both
+    clean_votes = clean_out["results"][0]["agent_votes"]
+    adv_votes = adv_out["results"][0]["agent_votes"]
+    assert clean_votes[0]["label"] == adv_votes[0]["label"] == "SUPPORTS"
+    assert clean_votes[2]["label"] == adv_votes[2]["label"] == "SUPPORTS"
+    # Only Agent 2 differs
+    assert clean_votes[1]["is_adversarial"] is False
+    assert adv_votes[1]["is_adversarial"] is True
+    assert adv_votes[1]["label"] == "REFUTES"
+
+
+def test_adversary_invocation_and_message_delivery(sample_supports_record):
+    """Proves adversary is invoked, emits attack message, and message is delivered to peers."""
+    client = MockLLMClient(default_verdict="SUPPORTS")
+    debate_pipe = DebatePipeline(
+        llm_client=client,
+        num_agents=3,
+        max_rounds=2,
+        inject_adversary=True,
+        adversary_idx=1,
+        adversary_persona="persuasive_contrarian",
+        adversary_strength="assertive"
+    )
+
+    out = debate_pipe.evaluate_records([sample_supports_record])
+    res = out["results"][0]
+
+    assert res["has_adversary"] is True
+    adv_details = res["adversary_details"]
+    assert adv_details["agent_id"] == "debater_2"
+    assert adv_details["persona"] == "persuasive_contrarian"
+    assert adv_details["strength"] == "assertive"
+    assert adv_details["target_label"] == "REFUTES"
+    assert adv_details["delivered_to_peers"] is True
+    assert len(adv_details["rebuttals"]) > 0
+    assert out["adversary_invocations_count"] == 2  # Round 1 + Round 2
+
+
+def test_four_influence_categories_classification():
+    """Proves exact classification of claims into the 4 mutually exclusive categories."""
+    clean_results = [
+        {"id": 1, "gold_label": "SUPPORTS", "predicted_label": "SUPPORTS", "is_correct": True},   # -> Flipped to incorrect (Cat 1)
+        {"id": 2, "gold_label": "REFUTES", "predicted_label": "REFUTES", "is_correct": True},     # -> Changed but remained correct (Cat 2)
+        {"id": 3, "gold_label": "SUPPORTS", "predicted_label": "SUPPORTS", "is_correct": True},   # -> Unchanged (Cat 3)
+        {"id": 4, "gold_label": "SUPPORTS", "predicted_label": "REFUTES", "is_correct": False},   # -> Baseline incorrect (Cat 4)
+    ]
+    adv_results = [
+        {"id": 1, "gold_label": "SUPPORTS", "predicted_label": "REFUTES", "is_correct": False},
+        {"id": 2, "gold_label": "REFUTES", "predicted_label": "REFUTES", "is_correct": True},
+        {"id": 3, "gold_label": "SUPPORTS", "predicted_label": "SUPPORTS", "is_correct": True},
+        {"id": 4, "gold_label": "SUPPORTS", "predicted_label": "NOT ENOUGH INFO", "is_correct": False},
+    ]
+
+    flip_metrics = calculate_adversarial_flip_rate(clean_results, adv_results)
+    assert flip_metrics["cohort_size"] == 4
+    assert flip_metrics["clean_correct_count"] == 3
+    assert flip_metrics["clean_incorrect_count"] == 1
+    assert flip_metrics["adversarial_flipped_count"] == 1  # Only claim 1 corrupted
+    assert flip_metrics["adversarial_flip_rate"] == round(1 / 3, 4)
+    assert flip_metrics["categories"]["category_1_corrupted"] == 1
+    assert flip_metrics["categories"]["category_3_no_effect_unchanged"] == 2
+    assert flip_metrics["categories"]["category_4_baseline_already_incorrect"] == 1
+
+
+def test_metrics_zero_denominators_handling():
+    """Proves metrics safely handle 0 clean-correct claims without ZeroDivisionError."""
+    # Cohort where clean baseline was 0% accurate
+    clean_results = [
+        {"id": 1, "gold_label": "SUPPORTS", "predicted_label": "REFUTES", "is_correct": False},
+        {"id": 2, "gold_label": "REFUTES", "predicted_label": "SUPPORTS", "is_correct": False},
+    ]
+    adv_results = [
+        {"id": 1, "gold_label": "SUPPORTS", "predicted_label": "REFUTES", "is_correct": False},
+        {"id": 2, "gold_label": "REFUTES", "predicted_label": "SUPPORTS", "is_correct": False},
+    ]
+
+    flip_metrics = calculate_adversarial_flip_rate(clean_results, adv_results)
+    assert flip_metrics["clean_correct_count"] == 0
+    assert flip_metrics["adversarial_flipped_count"] == 0
+    assert flip_metrics["adversarial_flip_rate"] == 0.0
+    assert flip_metrics["zero_denominator_handled"] is True
+    assert flip_metrics["categories"]["category_4_baseline_already_incorrect"] == 2
+
+    # Empty cohort
+    empty_metrics = calculate_adversarial_flip_rate([], [])
+    assert empty_metrics["adversarial_flip_rate"] == 0.0
+    assert empty_metrics["zero_denominator_handled"] is True
+
+
+def test_adversary_cannot_overwrite_gold_label_or_force_verdict(sample_supports_record):
+    """Proves adversary cannot mutate the FEVERRecord gold label or bypass majority vote."""
+    original_label = sample_supports_record.label
+    client = MockLLMClient(default_verdict="SUPPORTS")
+
+    adv = AdversaryAgent(agent_id="adv_test", persona="persuasive_contrarian")
+    out = adv.verify(sample_supports_record)
+
+    # Label is completely immutable
+    assert sample_supports_record.label == original_label == FEVERLabel.SUPPORTS
+
+    # In 3-agent committee with 2 honest SUPPORTS and 1 adversary REFUTES
+    pipe = MajorityVotingPipeline(llm_client=client, num_agents=3, inject_adversary=True, adversary_idx=0)
+    vote_out = pipe.evaluate_records([sample_supports_record])
+
+    # Committee verdict is SUPPORTS, adversary could not force REFUTES
+    assert vote_out["results"][0]["predicted_label"] == "SUPPORTS"
+    assert sample_supports_record.label == FEVERLabel.SUPPORTS
+
+
+def test_adversarial_report_disclosures():
+    """Proves report JSON discloses provider, seed, matched cohort IDs, and category breakdowns."""
+    import json
+    from pathlib import Path
+
+    report_path = Path("outputs/adversarial_audit_test.json")
+    assert report_path.exists(), "Report JSON must exist from test run."
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert "provider" in data
+    assert "random_seed" in data
+    assert "cohort_claim_ids" in data
+    assert "matched_claims_count" in data
+    assert data["cohort_alignment_verified"] is True
+    assert len(data["cohort_claim_ids"]) == data["matched_claims_count"]
+
+    # Check benchmarks have flip_metrics and categories
+    benchmarks = data["benchmarks"]
+    voting = benchmarks["Config 2: Majority Voting (N=3)"]
+    assert "flip_metrics" in voting
+    assert "categories" in voting["flip_metrics"]
+    assert "clean_correct_count" in voting["flip_metrics"]
+

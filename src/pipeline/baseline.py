@@ -82,12 +82,13 @@ class BaselinePipeline:
             meta = pred_output.metadata or {}
             p_tok = meta.get("prompt_tokens", 0)
             c_tok = meta.get("completion_tokens", 0)
-            cost = meta.get("estimated_cost_usd", 0.0)
+            cost = meta.get("estimated_cost_usd")
             lat = meta.get("latency_seconds", 0.0)
 
             total_prompt_tokens += p_tok
             total_completion_tokens += c_tok
-            total_cost_usd += cost
+            if cost is not None:
+                total_cost_usd += cost
             total_latency += lat
 
             is_correct = (record.label == pred_output.predicted_label)
@@ -104,7 +105,7 @@ class BaselinePipeline:
                 "latency_seconds": round(lat, 4),
                 "prompt_tokens": p_tok,
                 "completion_tokens": c_tok,
-                "estimated_cost_usd": round(cost, 6)
+                "estimated_cost_usd": round(cost, 6) if cost is not None else 0.0
             })
 
             if progress_callback:
@@ -146,7 +147,8 @@ class BaselinePipeline:
             "performance": {
                 "wall_time_seconds": round(elapsed_wall_time, 2),
                 "avg_latency_seconds": round(avg_latency, 4)
-            }
+            },
+            "results": results
         }
 
         full_output = {

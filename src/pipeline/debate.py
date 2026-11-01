@@ -303,6 +303,36 @@ class DebatePipeline:
                 consensus_count += 1
 
             is_correct = (record.label == debate_out.predicted_label)
+
+            adv_details = None
+            adversary_swayed_peers = []
+            if self.inject_adversary:
+                adv_id = f"debater_{self.adversary_idx + 1}"
+                adv_turns = [
+                    t for r_turns in debate_out.transcript.rounds.values()
+                    for t in r_turns
+                    if t.agent_id == adv_id or (t.metadata or {}).get("is_adversarial")
+                ]
+                if adv_turns:
+                    adv_r1 = adv_turns[0]
+                    adv_target = adv_r1.predicted_label.value
+                    for shift in debate_out.transcript.opinion_shifts:
+                        if shift["agent_id"] != adv_id and shift["final_label"] == adv_target:
+                            adversary_swayed_peers.append(shift["agent_id"])
+
+                    adv_details = {
+                        "agent_id": adv_id,
+                        "persona": (adv_r1.metadata or {}).get("adversary_persona", self.adversary_persona),
+                        "strength": (adv_r1.metadata or {}).get("attack_strength", self.adversary_strength),
+                        "target_label": adv_target,
+                        "r1_evidence": adv_r1.evidence,
+                        "r1_inference": adv_r1.inference,
+                        "r1_citations": adv_r1.cited_evidence,
+                        "rebuttals": [t.rebuttal for t in adv_turns[1:] if t.rebuttal],
+                        "delivered_to_peers": True,
+                        "peers_swayed": adversary_swayed_peers,
+                    }
+
             results.append({
                 "id": record.id,
                 "claim": record.claim,
@@ -313,6 +343,9 @@ class DebatePipeline:
                 "consensus_reached": debate_out.consensus_reached,
                 "is_unanimous": debate_out.is_unanimous,
                 "final_vote_counts": debate_out.final_vote_counts,
+                "has_adversary": self.inject_adversary,
+                "adversary_details": adv_details,
+                "adversary_swayed_peers": adversary_swayed_peers,
                 "opinion_shifts": debate_out.transcript.opinion_shifts,
                 "initial_verdicts": {k: v.value for k, v in debate_out.transcript.initial_verdicts.items()},
                 "final_verdicts": {k: v.value for k, v in debate_out.transcript.final_verdicts.items()},
@@ -328,7 +361,8 @@ class DebatePipeline:
                             "rebuttal": t.rebuttal,
                             "cited_evidence": t.cited_evidence,
                             "verdict_revised": t.verdict_revised,
-                            "status": t.status
+                            "status": t.status,
+                            "is_adversarial": bool(t.agent_id == f"debater_{self.adversary_idx + 1}" and self.inject_adversary) or bool((t.metadata or {}).get("is_adversarial")),
                         }
                         for t in turns
                     ]
@@ -356,6 +390,12 @@ class DebatePipeline:
             "prompt_version": self.prompt_version,
             "num_agents": self.num_agents,
             "max_rounds": self.max_rounds,
+            "has_adversary": self.inject_adversary,
+            "adversary_persona": self.adversary_persona if self.inject_adversary else None,
+            "adversary_strength": self.adversary_strength if self.inject_adversary else None,
+            "adversary_idx": self.adversary_idx if self.inject_adversary else None,
+            "adversary_invocations_count": sum(len(r["adversary_details"]["rebuttals"]) + 1 for r in results if r.get("adversary_details")) if self.inject_adversary else 0,
+            "total_peers_swayed_by_adversary": sum(len(r.get("adversary_swayed_peers", [])) for r in results) if self.inject_adversary else 0,
             "total_samples": total,
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],

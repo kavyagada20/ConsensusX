@@ -238,6 +238,24 @@ class MajorityVotingPipeline:
             # Step 2: Aggregate votes via documented tie-breaking rules
             aggregated = aggregate_majority_votes(votes=agent_votes, claim_id=record.id)
 
+            adv_details = None
+            if self.inject_adversary:
+                adv_vote = next(
+                    (v for v in agent_votes if getattr(v, "is_adversarial", False) or (v.metadata or {}).get("is_adversarial")),
+                    None
+                )
+                if adv_vote:
+                    adv_meta = adv_vote.metadata or {}
+                    adv_details = {
+                        "agent_id": adv_vote.agent_id,
+                        "persona": adv_meta.get("adversary_persona", self.adversary_persona),
+                        "strength": adv_meta.get("attack_strength", self.adversary_strength),
+                        "target_label": adv_vote.predicted_label.value,
+                        "attack_message": adv_vote.reasoning,
+                        "cited_evidence": adv_vote.cited_evidence,
+                        "delivered_to_aggregation": True,
+                    }
+
             y_true.append(record.label)
             y_pred.append(aggregated.predicted_label)
             team_verdicts.append([v.predicted_label for v in agent_votes])
@@ -267,13 +285,16 @@ class MajorityVotingPipeline:
                 "is_unanimous": aggregated.is_unanimous,
                 "successful_agents": aggregated.successful_agents,
                 "failed_agents": aggregated.failed_agents,
+                "has_adversary": self.inject_adversary,
+                "adversary_details": adv_details,
                 "agent_votes": [
                     {
                         "agent_id": v.agent_id,
                         "label": v.predicted_label.value,
                         "confidence": v.confidence,
                         "reasoning": v.reasoning,
-                        "cited_evidence": v.cited_evidence
+                        "cited_evidence": v.cited_evidence,
+                        "is_adversarial": bool(getattr(v, "is_adversarial", False) or (v.metadata or {}).get("is_adversarial")),
                     }
                     for v in agent_votes
                 ],
@@ -298,6 +319,11 @@ class MajorityVotingPipeline:
             "model": self.llm_client.model_name,
             "prompt_version": self.prompt_version,
             "num_agents": self.num_agents,
+            "has_adversary": self.inject_adversary,
+            "adversary_persona": self.adversary_persona if self.inject_adversary else None,
+            "adversary_strength": self.adversary_strength if self.inject_adversary else None,
+            "adversary_idx": self.adversary_idx if self.inject_adversary else None,
+            "adversary_invocations_count": sum(1 for r in results if r.get("adversary_details")) if self.inject_adversary else 0,
             "total_samples": total,
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],

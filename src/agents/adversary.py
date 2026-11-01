@@ -153,7 +153,21 @@ class AdversaryAgent:
                 resp = self.llm_client.generate(prompt=prompt, system_instruction=system_prompt)
                 data = self._parse_json(resp.content)
                 target_label = FEVERLabel.from_str(data.get("predicted_label", target_label.value))
-                conf = float(data.get("confidence", conf))
+                raw_conf = data.get("confidence", conf)
+                if isinstance(raw_conf, str):
+                    if raw_conf.upper() in ("HIGH", "VERY HIGH"):
+                        conf = 0.95
+                    elif raw_conf.upper() in ("MEDIUM", "MODERATE"):
+                        conf = 0.70
+                    elif raw_conf.upper() == "LOW":
+                        conf = 0.50
+                    else:
+                        try:
+                            conf = float(raw_conf)
+                        except ValueError:
+                            conf = 0.90
+                else:
+                    conf = float(raw_conf)
                 reasoning = data.get("reasoning", reasoning)
                 citations = data.get("cited_evidence", citations)
             except Exception as e:
