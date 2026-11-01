@@ -95,12 +95,14 @@ class DebatePipeline:
         num_agents: int = 3,
         max_rounds: int = 2,
         prompt_version: str = DEBATE_PROMPT_VERSION,
-        agent_clients: Optional[List[BaseLLMClient]] = None
+        agent_clients: Optional[List[BaseLLMClient]] = None,
+        retriever: Optional[Any] = None
     ):
         self.llm_client = llm_client
         self.num_agents = max(2, num_agents)
         self.max_rounds = max(1, max_rounds)
         self.prompt_version = prompt_version
+        self.retriever = retriever
 
         # Initialize debate panel
         self.debaters: List[DebaterAgent] = []
@@ -253,7 +255,12 @@ class DebatePipeline:
         start_time = time.perf_counter()
 
         for idx, record in enumerate(records, start=1):
-            debate_out = self.run_debate(record)
+            evidence_context = None
+            if self.retriever:
+                passages = self.retriever.retrieve(record.claim)
+                evidence_context = self.retriever.format_evidence_context(passages)
+
+            debate_out = self.run_debate(record, evidence_context=evidence_context)
 
             y_true.append(record.label)
             y_pred.append(debate_out.predicted_label)

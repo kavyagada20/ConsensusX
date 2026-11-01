@@ -140,11 +140,13 @@ class MajorityVotingPipeline:
         llm_client: BaseLLMClient,
         num_agents: int = 3,
         prompt_version: str = VOTING_PROMPT_VERSION,
-        agent_clients: Optional[List[BaseLLMClient]] = None
+        agent_clients: Optional[List[BaseLLMClient]] = None,
+        retriever: Optional[Any] = None
     ):
         self.llm_client = llm_client
         self.num_agents = max(1, num_agents)
         self.prompt_version = prompt_version
+        self.retriever = retriever
 
         # Initialize committee of independent verifiers
         self.verifiers: List[SingleAgentVerifier] = []
@@ -190,6 +192,11 @@ class MajorityVotingPipeline:
         start_time = time.perf_counter()
 
         for idx, record in enumerate(records, start=1):
+            evidence_context = None
+            if self.retriever:
+                passages = self.retriever.retrieve(record.claim)
+                evidence_context = self.retriever.format_evidence_context(passages)
+
             # Step 1: Collect votes independently before aggregation
             agent_votes: List[ClaimVerificationOutput] = []
             claim_prompt_tokens = 0
@@ -198,7 +205,7 @@ class MajorityVotingPipeline:
             claim_latency = 0.0
 
             for verifier in self.verifiers:
-                vote = verifier.verify(record)
+                vote = verifier.verify(record, evidence_context=evidence_context)
                 agent_votes.append(vote)
 
                 meta = vote.metadata or {}

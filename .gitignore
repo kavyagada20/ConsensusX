@@ -38,6 +38,8 @@ venv.bak/
 # Data & Large Files (Keep raw jsonl out of git tracking to preserve repo performance)
 data/raw/fever/*.jsonl
 data/processed/*.jsonl
+data/processed/faiss_index/
+*.faiss
 data/wiki_corpus/*
 !data/wiki_corpus/.gitkeep
 !data/processed/.gitkeep

@@ -101,6 +101,25 @@ def main() -> None:
         default="outputs/experiment_comparison.json",
         help="Output destination path for unified benchmark results."
     )
+    parser.add_argument(
+        "--retriever",
+        type=str,
+        default="none",
+        choices=["none", "faiss", "oracle"],
+        help="Evidence retriever: 'none' (zero-shot), 'faiss' (dense vector), or 'oracle' (gold evidence)."
+    )
+    parser.add_argument(
+        "--index-dir",
+        type=str,
+        default="data/processed/faiss_index",
+        help="Directory where FAISS vector index is stored."
+    )
+    parser.add_argument(
+        "--corpus",
+        type=str,
+        default="data/processed/dev_corpus.jsonl",
+        help="Path to evidence corpus JSONL (for oracle retriever or embedding)."
+    )
 
     args = parser.parse_args()
 
@@ -134,17 +153,40 @@ def main() -> None:
     results_by_config: Dict[str, Dict[str, Any]] = {}
     overall_start = time.perf_counter()
 
+    # Initialize optional retriever
+    evidence_retriever = None
+    if args.retriever == "faiss":
+        from src.retrieval.embeddings import get_embedding_model
+        from src.retrieval.retriever import FAISSRetriever
+        from src.retrieval.vector_store import FAISSVectorStore
+
+        emb_model = get_embedding_model(provider="mock" if args.provider == "mock" else "gemini")
+        vector_store = FAISSVectorStore.load(args.index_dir, embedding_model=emb_model)
+        evidence_retriever = FAISSRetriever(vector_store=vector_store)
+        logger.info("Initialized FAISSRetriever from %s", args.index_dir)
+    elif args.retriever == "oracle":
+        from src.retrieval.corpus import EvidenceCorpus
+        from src.retrieval.retriever import OracleRetriever
+
+        corpus = EvidenceCorpus.load_jsonl(args.corpus)
+        evidence_retriever = OracleRetriever(corpus=corpus)
+        logger.info("Initialized OracleRetriever from %s", args.corpus)
+
     # Config 1: Baseline
     if "baseline" in selected_configs:
         logger.info(">>> Running Config 1: Single-Agent Baseline...")
-        baseline_pipeline = BaselinePipeline(llm_client=llm_client)
+        baseline_pipeline = BaselinePipeline(llm_client=llm_client, retriever=evidence_retriever)
         baseline_summary = baseline_pipeline.evaluate_records(records=records)
         results_by_config["Config 1: Single-Agent Baseline"] = baseline_summary
 
     # Config 2: Majority Voting
     if "voting" in selected_configs:
         logger.info(">>> Running Config 2: Multi-Agent Majority Voting (N=%d)...", args.num_agents)
-        voting_pipeline = MajorityVotingPipeline(llm_client=llm_client, num_agents=args.num_agents)
+        voting_pipeline = MajorityVotingPipeline(
+            llm_client=llm_client,
+            num_agents=args.num_agents,
+            retriever=evidence_retriever
+        )
         voting_summary = voting_pipeline.evaluate_records(records=records)
         results_by_config[f"Config 2: Majority Voting (N={args.num_agents})"] = voting_summary
 
@@ -154,7 +196,8 @@ def main() -> None:
         debate_pipeline = DebatePipeline(
             llm_client=llm_client,
             num_agents=args.num_agents,
-            max_rounds=args.debate_rounds
+            max_rounds=args.debate_rounds,
+            retriever=evidence_retriever
         )
         debate_summary = debate_pipeline.evaluate_records(records=records)
         results_by_config[f"Config 3: Debate (N={args.num_agents}, R={args.debate_rounds})"] = debate_summary

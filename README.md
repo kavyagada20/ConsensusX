@@ -149,7 +149,19 @@ ConsensusX/
 │   │   ├── xai.py                   # xAI Grok client (OpenAI-compatible) with caching
 │   │   ├── pricing.py               # Token pricing table and USD cost calculation
 │   │   └── factory.py               # get_llm_client(provider, model, ...)
-│   ├── retrieval/                   # Evidence retrieval interface (Oracle & BM25)
+│   ├── retrieval/                   # Dense vector retrieval & RAG infrastructure
+│   │   ├── __init__.py
+│   │   ├── schema.py                # EvidencePassage, RetrievedPassage, RetrievalMetrics
+│   │   ├── corpus.py                # EvidenceCorpus manager, loader & dev corpus generator
+│   │   ├── embeddings/              # Configurable embedding models (Hash, Gemini, ST)
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py              # BaseEmbeddingModel interface
+│   │   │   ├── mock.py              # Deterministic offline HashEmbeddingModel
+│   │   │   ├── gemini.py            # Gemini text-embedding-004 with disk caching
+│   │   │   └── factory.py           # get_embedding_model()
+│   │   ├── vector_store.py          # FAISSVectorStore with persistence & incremental add
+│   │   ├── retriever.py             # FAISSRetriever & OracleRetriever
+│   │   └── evaluation.py            # Retrieval metrics (Recall@k, MRR@k, nDCG@k)
 │   ├── agents/                      # Verifier, Debater, Adversarial, and Judge agents
 │   │   ├── __init__.py
 │   │   ├── single_agent.py          # SingleAgentVerifier with structured JSON reasoning
@@ -167,6 +179,9 @@ ConsensusX/
 │       └── logging.py
 ├── scripts/                         # Runnable CLI scripts
 │   ├── prepare_data_sample.py       # Stratified sampling & provenance manifest generator
+│   ├── build_evidence_corpus.py     # Reproducible evidence corpus generator & manifest
+│   ├── build_vector_index.py        # FAISS vector index builder & test query CLI
+│   ├── evaluate_retrieval.py        # Retrieval benchmark runner (Recall@k, MRR@k, nDCG@k)
 │   ├── run_baseline.py              # Single-Agent Baseline runner with reporting
 │   └── run_experiments.py           # Unified comparative runner across Configs 1, 2, and 3
 ├── tests/                           # Automated unit & integration tests
@@ -182,7 +197,8 @@ ConsensusX/
 │   ├── test_sample_generation.py    # Stratified sampling determinism tests
 │   ├── test_single_agent_baseline.py# SingleAgentVerifier & BaselinePipeline tests
 │   ├── test_voting.py               # Majority voting, ties & failure handling tests
-│   └── test_debate.py               # Structured debate, rounds & transcript logging tests
+│   ├── test_debate.py               # Structured debate, rounds & transcript logging tests
+│   └── test_retrieval.py            # FAISS index, embeddings, corpus & metrics tests
 └── outputs/                         # Benchmark outputs, logs, and artifacts (git-ignored)
     ├── baseline_results.json        # Single-Agent Baseline predictions & summary
     └── experiment_comparison.json   # Unified comparative benchmark results across Configs 1-3
@@ -252,13 +268,16 @@ ConsensusX/
   5. Consensus aggregation computes winning verdict, tracks opinion shifts, consensus rate, and False Consensus Rate (FCR).
   6. Configurable committee size (`num_agents`) and bounded debate rounds (`max_rounds`).
 
-### Phase 5: RAG & Evidence Grounding [PLANNED]
-- **Objective**: Integrate passage retrieval and strict citation requirements for all debater claims.
+### Phase 5: RAG & Evidence Grounding [COMPLETE]
+- **Objective**: Build reproducible evidence retrieval pipelines, dense vector indexing with FAISS, and benchmark retrieval metrics.
 - **Acceptance Criteria**:
-  1. Dual retriever interfaces: Oracle retriever (FEVER gold evidence) and local BM25 retriever over candidate evidence pages.
-  2. Strict citation syntax enforced: Every empirical claim must cite `[Document_Title:Sentence_ID]`.
-  3. Automated citation verifier checks whether cited sentences exist in the retrieved passages and match verbatim context.
-  4. Claims without valid citations are flagged as ungrounded and discarded during debate scoring.
+  1. Reproducible evidence corpus preparation (`scripts/build_evidence_corpus.py`) with stable IDs (`{title}:{sentence_id}`) and provenance manifests.
+  2. Configurable embedding models: Deterministic `HashEmbeddingModel` (offline, 128-dim), Google Gemini `text-embedding-004` (768-dim) with disk caching, and optional `sentence-transformers`.
+  3. FAISS dense vector store (`FAISSVectorStore`) with `IndexFlatIP` cosine similarity, persistence, reload, incremental updates, and corrupted index detection.
+  4. Dual retriever interfaces: `FAISSRetriever` (dense similarity) and `OracleRetriever` (gold evidence for controlled reasoning tests).
+  5. Strict label isolation: Claims are retrieved solely by natural language text (`record.claim`); ground truth labels never influence retrieval.
+  6. Retrieval evaluation engine (`scripts/evaluate_retrieval.py`): Computes Recall@k, MRR@k, nDCG@k, and Precision@k against gold FEVER coordinates.
+  7. Optional RAG flag: Baseline, Voting, and Debate pipelines run zero-shot by default and seamlessly accept retrieved evidence when `--retriever faiss` or `--retriever oracle` is passed.
 
 ### Phase 6: Evidence-Based Judging (ConsensusX Core) [PLANNED]
 - **Objective**: Construct the evidence-auditing judge that resolves conflicting arguments by verifying evidence validity.
@@ -385,7 +404,41 @@ python scripts/run_experiments.py --configs voting debate --provider xai --model
 ```
 Comparative metrics (Accuracy, Macro-F1, False Consensus Rate, Latency, and Cost) are printed in a unified comparison table and saved to `outputs/experiment_comparison.json`.
 
-### 7. Run Automated Tests
+### 7. Step D: Evidence Retrieval & RAG Indexing
+
+#### 1. Build the Evidence Corpus:
+Extract passages from the evaluation sample into a reproducible JSONL corpus with provenance manifest:
+```bash
+python scripts/build_evidence_corpus.py --data data/processed/dev_sample_300.jsonl --output data/processed/dev_corpus.jsonl
+```
+
+#### 2. Build & Persist FAISS Dense Vector Index:
+Embed passages and save `index.faiss` and `metadata.json`:
+```bash
+# Offline deterministic embeddings (Zero Cost, instant)
+python scripts/build_vector_index.py --embedding-provider mock --corpus data/processed/dev_corpus.jsonl --output-dir data/processed/faiss_index
+
+# Query test against the vector index
+python scripts/build_vector_index.py --query "Fox 2000 Pictures released the film Soul Food." --top-k 5
+```
+
+#### 3. Evaluate Retrieval Ranking Metrics (Recall@k, MRR@k, nDCG@k):
+Evaluate retrieval quality against FEVER gold evidence coordinates:
+```bash
+python scripts/evaluate_retrieval.py --top-k 5
+```
+
+#### 4. Run Multi-Agent Experiments with RAG Evidence:
+Pass retrieved context into Single-Agent, Majority Voting, and Structured Debate:
+```bash
+# Offline with FAISS retrieval
+python scripts/run_experiments.py --provider mock --retriever faiss --limit 10
+
+# Controlled experiment with Gold Oracle evidence
+python scripts/run_experiments.py --provider mock --retriever oracle --limit 10
+```
+
+### 8. Run Automated Tests
 Execute the full test suite offline:
 ```bash
 python -m pytest

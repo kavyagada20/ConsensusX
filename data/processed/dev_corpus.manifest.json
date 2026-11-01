@@ -1,0 +1,10 @@
+{
+  "manifest_version": "1.0.0",
+  "corpus_name": "consensusx_dev_corpus",
+  "total_passages": 319,
+  "unique_titles": 222,
+  "source_description": "FEVER and Wikipedia evidence passages for ConsensusX RAG",
+  "created_at": "2026-11-01T13:50:02.320870+00:00",
+  "output_file": "data\\processed\\dev_corpus.jsonl",
+  "embedding_model_compatible": null
+}

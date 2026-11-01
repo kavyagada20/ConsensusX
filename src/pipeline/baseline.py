@@ -20,10 +20,12 @@ class BaselinePipeline:
     def __init__(
         self,
         llm_client: BaseLLMClient,
-        prompt_version: str = "v1.0.0"
+        prompt_version: str = "v1.0.0",
+        retriever: Optional[Any] = None
     ):
         self.llm_client = llm_client
         self.prompt_version = prompt_version
+        self.retriever = retriever
         self.verifier = SingleAgentVerifier(
             llm_client=llm_client,
             prompt_version=prompt_version
@@ -67,7 +69,12 @@ class BaselinePipeline:
         start_time = time.perf_counter()
 
         for idx, record in enumerate(records, start=1):
-            pred_output = self.verifier.verify(record)
+            evidence_context = None
+            if self.retriever:
+                passages = self.retriever.retrieve(record.claim)
+                evidence_context = self.retriever.format_evidence_context(passages)
+
+            pred_output = self.verifier.verify(record, evidence_context=evidence_context)
 
             y_true.append(record.label)
             y_pred.append(pred_output.predicted_label)

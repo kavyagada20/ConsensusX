@@ -48,3 +48,12 @@ evaluation:
     - token_usage
   output_dir: "outputs"
 
+retrieval:
+  corpus_path: "data/processed/dev_corpus.jsonl"
+  index_dir: "data/processed/faiss_index"
+  embedding_provider: "mock" # Options: mock, gemini, sentence_transformer
+  embedding_model: "hash-embedding-128" # For Gemini: text-embedding-004
+  top_k: 5
+  batch_size: 128
+
+
