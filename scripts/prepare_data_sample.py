@@ -81,9 +81,13 @@ def main() -> None:
     logger.info("Sample generation complete. Distribution: %s", dict(counts))
     assert len(samples) == args.sample_size, f"Expected {args.sample_size}, got {len(samples)}"
     expected_per_class = args.sample_size // 3
+    remainder = args.sample_size % 3
     for label, count in counts.items():
-        assert count == expected_per_class, f"Class {label} count is {count}, expected {expected_per_class}"
-    logger.info("Verification PASSED: Sample is balanced with exactly %d per class.", expected_per_class)
+        if remainder == 0:
+            assert count == expected_per_class, f"Class {label} count is {count}, expected {expected_per_class}"
+        else:
+            assert count in (expected_per_class, expected_per_class + 1), f"Class {label} count {count} not in ({expected_per_class}, {expected_per_class + 1})"
+    logger.info("Verification PASSED: Sample is balanced (approx %d per class).", expected_per_class)
 
     # Optional Leakage Verification
     if args.check_leakage_against:

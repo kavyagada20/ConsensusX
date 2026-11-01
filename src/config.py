@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # LLM Settings
     default_llm_provider: str = Field(default="mock", description="mock, gemini, xai, or openai")
-    default_llm_model: str = "gemini-1.5-flash"
+    default_llm_model: str = "gemini-2.0-flash"
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     xai_api_key: Optional[str] = None

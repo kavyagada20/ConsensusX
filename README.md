@@ -120,6 +120,7 @@ sequenceDiagram
 ConsensusX/
 ├── .env.example                     # Environment template (API keys, provider settings)
 ├── .gitignore                        # Git ignore (secrets, raw datasets, cache, outputs)
+├── app.py                           # Streamlit research demonstration dashboard
 ├── pyproject.toml                   # Python packaging & pytest configuration
 ├── requirements.txt                 # Project dependencies
 ├── README.md                        # Master research documentation
@@ -165,15 +166,18 @@ ConsensusX/
 │   ├── agents/                      # Verifier, Debater, Adversarial, and Judge agents
 │   │   ├── __init__.py
 │   │   ├── single_agent.py          # SingleAgentVerifier with structured JSON reasoning
-│   │   └── debater.py               # DebaterAgent with rebuttal, revision & epistemic separation
+│   │   ├── debater.py               # DebaterAgent with rebuttal, revision & epistemic separation
+│   │   ├── adversary.py             # AdversaryAgent (persuasive_contrarian, citation_distorter)
+│   │   └── judge.py                 # EvidenceJudgeAgent with citation audit & safety overrides
 │   ├── pipeline/                    # Orchestrators for Baseline, Voting, Debate, ConsensusX
 │   │   ├── __init__.py
 │   │   ├── baseline.py              # BaselinePipeline orchestrator & reporting (Config 1)
 │   │   ├── voting.py                # MajorityVotingPipeline with tie-breaker rules (Config 2)
-│   │   └── debate.py                # DebatePipeline with multi-turn cross-examination (Config 3)
+│   │   ├── debate.py                # DebatePipeline with multi-turn cross-examination (Config 3)
+│   │   └── consensus_x.py           # ConsensusXPipeline with RAG + Debate + Judge (Config 4)
 │   ├── evaluation/                  # Metrics calculation (Accuracy, F1, Confusion Matrix, Abstention)
 │   │   ├── __init__.py
-│   │   └── metrics.py               # Accuracy, Macro-F1, Confusion Matrix, Abstention Metrics
+│   │   └── metrics.py               # Accuracy, Macro-F1, FCR, AVS, AFR, Wilson CIs, Cohort Check
 │   └── utils/                       # Structured logging, disk caching, serialization
 │       ├── __init__.py
 │       └── logging.py
@@ -183,7 +187,9 @@ ConsensusX/
 │   ├── build_vector_index.py        # FAISS vector index builder & test query CLI
 │   ├── evaluate_retrieval.py        # Retrieval benchmark runner (Recall@k, MRR@k, nDCG@k)
 │   ├── run_baseline.py              # Single-Agent Baseline runner with reporting
-│   └── run_experiments.py           # Unified comparative runner across Configs 1, 2, and 3
+│   ├── run_experiments.py           # Unified comparative runner across Configs 1, 2, 3, 4
+│   ├── run_adversarial_experiments.py # Controlled adversarial robustness benchmark (Clean vs Adv)
+│   └── audit_judge_verdicts.py      # Error taxonomy & citation auditing inspection script
 ├── tests/                           # Automated unit & integration tests
 │   ├── __init__.py
 │   ├── test_config.py               # Settings & configuration test
@@ -198,10 +204,15 @@ ConsensusX/
 │   ├── test_single_agent_baseline.py# SingleAgentVerifier & BaselinePipeline tests
 │   ├── test_voting.py               # Majority voting, ties & failure handling tests
 │   ├── test_debate.py               # Structured debate, rounds & transcript logging tests
-│   └── test_retrieval.py            # FAISS index, embeddings, corpus & metrics tests
+│   ├── test_retrieval.py            # FAISS index, embeddings, corpus & metrics tests
+│   ├── test_judge.py                # Evidence-based judge & citation verification tests
+│   ├── test_adversarial.py          # Adversarial personas, robustness metrics, cohort validation
+│   └── test_dashboard.py            # Streamlit dashboard components & report parsing tests
 └── outputs/                         # Benchmark outputs, logs, and artifacts (git-ignored)
     ├── baseline_results.json        # Single-Agent Baseline predictions & summary
-    └── experiment_comparison.json   # Unified comparative benchmark results across Configs 1-3
+    ├── benchmark_comparison_full300.json # 300-claim comparative benchmark across Configs 1-4
+    ├── adversarial_experiment_report.json # Adversarial robustness report (JSON)
+    └── adversarial_benchmark_report.md   # Adversarial robustness comparative report (Markdown)
 ```
 
 ---
@@ -279,7 +290,7 @@ ConsensusX/
   6. Retrieval evaluation engine (`scripts/evaluate_retrieval.py`): Computes Recall@k, MRR@k, nDCG@k, and Precision@k against gold FEVER coordinates.
   7. Optional RAG flag: Baseline, Voting, and Debate pipelines run zero-shot by default and seamlessly accept retrieved evidence when `--retriever faiss` or `--retriever oracle` is passed.
 
-### Phase 6: Evidence-Based Judging (ConsensusX Core) [PLANNED]
+### Phase 6: Evidence-Based Judging (ConsensusX Core) [COMPLETE]
 - **Objective**: Construct the evidence-auditing judge that resolves conflicting arguments by verifying evidence validity.
 - **Acceptance Criteria**:
   1. Auditing judge cross-checks all cited evidence against the retrieved context; ungrounded assertions are stripped.
@@ -287,21 +298,21 @@ ConsensusX/
   3. Debates lacking sufficient empirical backing correctly default to `NOT ENOUGH INFO`.
   4. Demonstrates a measurable reduction in false consensus compared to standard ungrounded debate (Config 3).
 
-### Phase 7: Controlled Adversarial-Agent Experiments [PLANNED]
+### Phase 7: Controlled Adversarial-Agent Experiments [COMPLETE]
 - **Objective**: Stress-test Configurations 2, 3, and 4 against targeted adversarial misinformation.
 - **Acceptance Criteria**:
   1. Configurable adversarial personas implemented: Persuasive Contrarian, Subtle Evidence Distorter, and Sycophantic Exploiter.
   2. Automated test harness injects 1 adversary into a 3-agent committee across Configurations 2, 3, and 4.
-  3. Adversarial Vulnerability Score (AVS) and Adversarial Flip Rate (AFR) computed across all configurations.
-  4. Verifies whether ConsensusX evidence-auditing significantly lowers AVS compared to ungrounded debate and voting.
+  3. Adversarial Vulnerability Score (AVS), Adversarial Flip Rate (AFR), and 4-category influence breakdown computed across all configurations.
+  4. Strict cohort alignment assertions verify all configurations evaluate identical claims.
 
-### Phase 8: Evaluation, Error Analysis & Reproducible Reporting [PLANNED]
-- **Objective**: Produce unified benchmark comparison tables, failure mode categorization, and reproducible export artifacts.
+### Phase 8: Research Dashboard & Reproducible Demonstration (Streamlit Prototype) [COMPLETE]
+- **Objective**: Deliver an interactive Streamlit prototype and reproducible evaluation artifacts for final-year demonstration.
 - **Acceptance Criteria**:
-  1. One-click CLI benchmark runner executes all 4 configurations on the exact same dataset split.
-  2. Automated export of publication-ready comparison tables (Markdown, CSV, LaTeX).
-  3. Structured error taxonomy categorizing failures (retrieval failure, reasoning failure, adversarial deception, judge error).
-  4. Full provenance and parameter manifests ensure bitwise reproducibility of all reported figures.
+  1. Lightweight Streamlit dashboard (`app.py`) with Live Verification, Retrieved Evidence Inspection, Multi-Agent Deliberation, and Evidence Judge Audit tabs.
+  2. Comparative Benchmark Analytics page displaying Accuracy, 95% Wilson CIs, FCR, AVS, AFR, and Latency from recorded outputs.
+  3. Clean separation between live LLM inference, mock pipeline tests, and historical outputs.
+  4. Full provenance and parameter manifests ensure complete reproducibility.
 
 ---
 
@@ -533,15 +544,47 @@ python scripts/audit_judge_verdicts.py --sample-size 30 --seed 42 --output-dir o
 ```
 Generates `judge_audit.csv`, `judge_audit.json`, and human-reviewable `judge_audit_report.md`.
 
-### 11. Run Automated Tests
-Execute the full test suite offline (84 passing unit and regression tests):
+### 11. Step H: Launch the Streamlit Research Dashboard
+
+ConsensusX includes an interactive Streamlit research prototype suitable for live project demonstrations and thesis defense:
+
+```bash
+streamlit run app.py
+```
+
+The dashboard opens in your browser (default: `http://localhost:8501`) and provides three primary operational views:
+1. **🔬 Live Claim Verification**:
+   - Enter custom factual statements or load pre-curated FEVER benchmark claims.
+   - Run any of the 4 configurations (Single-Agent, Majority Voting, Debate, ConsensusX).
+   - Toggle adversarial injection (`persuasive_contrarian`, `citation_distorter`).
+   - Deep inspection tabs: **Retrieved Source Evidence**, **Multi-Agent Deliberation Turns**, and **Evidence-Based Judge Safety Overrides**.
+2. **📊 Recorded Benchmark Analytics**:
+   - Load and explore saved evaluation outputs (`outputs/adversarial_experiment_report.json`, `outputs/benchmark_comparison_full300.json`).
+   - Inspect comparative tables with 95% Wilson Confidence Intervals, False Consensus Rates (FCR), Adversarial Vulnerability Scores (AVS), and Flip Rates (AFR).
+   - Filter and explore claims across the **4-Category Adversarial Influence Breakdown**.
+3. **📖 Architecture & Research Notes**:
+   - Interactive reference guide detailing system design, epistemic formulas, and experimental methodology.
+
+### 12. Run Automated Tests
+Execute the full test suite offline (95 passing unit and regression tests):
 ```bash
 python -m pytest
 ```
 
 ---
 
-## 12. Citation & Attribution
+## 13. Limitations & Troubleshooting Guide
+
+| Issue / Symptom | Root Cause | Recommended Troubleshooting Action |
+| :--- | :--- | :--- |
+| `429 RESOURCE_EXHAUSTED` | Google Gemini Free Tier enforces a strict quota of 5 requests per minute. A single multi-agent debate claim across 3 agents and 2 rounds generates ~33 calls. | Use `--provider mock` for offline pipeline and contract testing. For live batch evaluation, use a paid tier API key or insert pacing delays. |
+| `Dimension mismatch: Index (128) vs Model (768)` | The prebuilt FAISS index in `data/processed/faiss_index` was created with 128-dimensional mock embeddings. | Pass `--embedding-provider mock` to match the vector store dimension, or rebuild the index using `--embedding-provider gemini` with live API keys. |
+| `API Key Missing Error` | Live LLM provider selected (`gemini` or `xai`) without credentials in `.env`. | Create `.env` from `.env.example` and populate `GEMINI_API_KEY` or `XAI_API_KEY`. Do NOT commit `.env` to Git. |
+| `Cohort Alignment Error` | Claim IDs or gold labels differ between clean and adversarial evaluation runs. | Use `scripts/run_adversarial_experiments.py`, which generates a single deterministic stratified cohort and asserts 100% alignment before comparison. |
+
+---
+
+## 14. Citation & Attribution
 
 If you reference or build upon ConsensusX, please cite:
 ```bibtex

@@ -113,7 +113,8 @@ class FEVERDataLoader:
         Returns:
             List[FEVERRecord]: The sampled records.
         """
-        target_per_class = sample_size // 3
+        per_class = sample_size // 3
+        remainder = sample_size % 3
         pools: dict[FEVERLabel, List[FEVERRecord]] = {
             FEVERLabel.SUPPORTS: [],
             FEVERLabel.REFUTES: [],
@@ -128,17 +129,20 @@ class FEVERDataLoader:
 
         rng = random.Random(random_seed)
         sampled: List[FEVERRecord] = []
-        for label, records in pools.items():
+        ordered_labels = [FEVERLabel.SUPPORTS, FEVERLabel.REFUTES, FEVERLabel.NOT_ENOUGH_INFO]
+        for i, label in enumerate(ordered_labels):
+            records = pools[label]
+            target_count = per_class + (1 if i < remainder else 0)
             # Sort deterministically by record id before sampling
             records.sort(key=lambda r: r.id)
-            if len(records) < target_per_class:
+            if len(records) < target_count:
                 logger.warning(
                     "Only %d samples found for %s, requested %d",
-                    len(records), label.value, target_per_class
+                    len(records), label.value, target_count
                 )
                 sampled.extend(records)
             else:
-                sampled.extend(rng.sample(records, target_per_class))
+                sampled.extend(rng.sample(records, target_count))
 
         # Shuffle sampled set deterministically so classes are intermixed
         rng.shuffle(sampled)
