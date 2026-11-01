@@ -7,6 +7,11 @@ from src.data.schema import (
     DatasetManifest,
     EvidenceItem,
     VerifiableStatus,
+    AgentRole,
+    DebaterTurnOutput,
+    DebateTranscript,
+    MajorityVotingOutput,
+    DebateOutput,
 )
 from src.data.loader import FEVERDataLoader, check_data_leakage
 
@@ -17,6 +22,11 @@ __all__ = [
     "DatasetManifest",
     "EvidenceItem",
     "VerifiableStatus",
+    "AgentRole",
+    "DebaterTurnOutput",
+    "DebateTranscript",
+    "MajorityVotingOutput",
+    "DebateOutput",
     "FEVERDataLoader",
     "check_data_leakage",
 ]

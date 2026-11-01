@@ -1,0 +1,186 @@
+"""Unified CLI runner to execute and compare ConsensusX experimental configurations:
+Config 1: Single-Agent Baseline
+Config 2: Multi-Agent Independent Majority Voting
+Config 3: Multi-Agent Structured Debate
+"""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+# Ensure repository root is on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.config import settings
+from src.data.loader import FEVERDataLoader
+from src.data.schema import FEVERRecord
+from src.llm.factory import get_llm_client
+from src.pipeline.baseline import BaselinePipeline
+from src.pipeline.debate import DebatePipeline
+from src.pipeline.voting import MajorityVotingPipeline
+from src.utils.logging import get_logger
+
+logger = get_logger("run_experiments")
+
+
+def print_comparison_table(results_by_config: Dict[str, Dict[str, Any]]) -> None:
+    """Prints a structured ASCII comparison table of benchmark configurations."""
+    print("\n" + "=" * 90)
+    print("                    ConsensusX Benchmark Comparison Summary")
+    print("=" * 90)
+    print(f"{'Configuration':<35} | {'Accuracy':<10} | {'Macro-F1':<10} | {'FCR':<8} | {'Avg Latency':<12} | {'Total Cost':<10}")
+    print("-" * 90)
+
+    for cfg_name, summary in results_by_config.items():
+        acc = f"{summary.get('accuracy', 0.0) * 100:.1f}%"
+        f1 = f"{summary.get('macro_f1', 0.0):.4f}"
+        fcr_val = summary.get("false_consensus_rate")
+        fcr = f"{fcr_val * 100:.1f}%" if fcr_val is not None else "N/A"
+        lat = f"{summary.get('performance', {}).get('avg_latency_per_claim', 0.0):.2f}s"
+        cost = f"${summary.get('token_usage', {}).get('total_estimated_cost_usd', 0.0):.4f}"
+        print(f"{cfg_name:<35} | {acc:<10} | {f1:<10} | {fcr:<8} | {lat:<12} | {cost:<10}")
+
+    print("=" * 90)
+    print("  * Note: FCR = False Consensus Rate (group agreement on an incorrect verdict).")
+    print("  * Identical evaluation samples and ground-truth scoring used across all configurations.")
+    print("=" * 90 + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run ConsensusX Experimental Configurations Comparison.")
+    parser.add_argument(
+        "--data",
+        type=str,
+        default="data/processed/dev_sample_300.jsonl",
+        help="Path to evaluation JSONL file."
+    )
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=["all"],
+        choices=["all", "baseline", "voting", "debate"],
+        help="Configurations to run: 'all', 'baseline', 'voting', 'debate'."
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=settings.default_llm_provider,
+        choices=["mock", "gemini", "xai", "grok"],
+        help="LLM provider ('mock', 'gemini', 'xai')."
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Model ID (e.g. gemini-2.0-flash, grok-2)."
+    )
+    parser.add_argument(
+        "--num-agents",
+        type=int,
+        default=3,
+        help="Number of agents for voting and debate committees (default: 3)."
+    )
+    parser.add_argument(
+        "--debate-rounds",
+        type=int,
+        default=2,
+        help="Number of debate rounds for structured debate (default: 2)."
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional limit on number of claims to evaluate."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="outputs/experiment_comparison.json",
+        help="Output destination path for unified benchmark results."
+    )
+
+    args = parser.parse_args()
+
+    # Load evaluation records
+    data_path = Path(args.data)
+    if not data_path.exists():
+        logger.error("Dataset file not found: %s", data_path)
+        sys.exit(1)
+
+    logger.info("Loading records from: %s", data_path)
+    loader = FEVERDataLoader(data_path)
+    records: List[FEVERRecord] = loader.load_all(limit=args.limit)
+
+    if not records:
+        logger.error("No records loaded from %s", data_path)
+        sys.exit(1)
+
+    logger.info("Loaded %d records for comparative evaluation.", len(records))
+
+    # Initialize client
+    llm_client = get_llm_client(
+        provider=args.provider,
+        model_name=args.model,
+        temperature=0.0
+    )
+
+    selected_configs = args.configs
+    if "all" in selected_configs:
+        selected_configs = ["baseline", "voting", "debate"]
+
+    results_by_config: Dict[str, Dict[str, Any]] = {}
+    overall_start = time.perf_counter()
+
+    # Config 1: Baseline
+    if "baseline" in selected_configs:
+        logger.info(">>> Running Config 1: Single-Agent Baseline...")
+        baseline_pipeline = BaselinePipeline(llm_client=llm_client)
+        baseline_summary = baseline_pipeline.evaluate_records(records=records)
+        results_by_config["Config 1: Single-Agent Baseline"] = baseline_summary
+
+    # Config 2: Majority Voting
+    if "voting" in selected_configs:
+        logger.info(">>> Running Config 2: Multi-Agent Majority Voting (N=%d)...", args.num_agents)
+        voting_pipeline = MajorityVotingPipeline(llm_client=llm_client, num_agents=args.num_agents)
+        voting_summary = voting_pipeline.evaluate_records(records=records)
+        results_by_config[f"Config 2: Majority Voting (N={args.num_agents})"] = voting_summary
+
+    # Config 3: Structured Debate
+    if "debate" in selected_configs:
+        logger.info(">>> Running Config 3: Structured Debate (N=%d, Rounds=%d)...", args.num_agents, args.debate_rounds)
+        debate_pipeline = DebatePipeline(
+            llm_client=llm_client,
+            num_agents=args.num_agents,
+            max_rounds=args.debate_rounds
+        )
+        debate_summary = debate_pipeline.evaluate_records(records=records)
+        results_by_config[f"Config 3: Debate (N={args.num_agents}, R={args.debate_rounds})"] = debate_summary
+
+    total_wall_time = time.perf_counter() - overall_start
+
+    # Print summary table
+    print_comparison_table(results_by_config)
+
+    # Save unified output
+    unified_report = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "provider": args.provider,
+        "model": llm_client.model_name,
+        "sample_size": len(records),
+        "total_elapsed_wall_time_seconds": round(total_wall_time, 2),
+        "configurations": results_by_config
+    }
+
+    out_file = Path(args.output)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(unified_report, f, indent=2)
+
+    logger.info("Saved unified experiment comparison to: %s", out_file)
+
+
+if __name__ == "__main__":
+    main()

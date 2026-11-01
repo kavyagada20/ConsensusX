@@ -104,3 +104,69 @@ class DatasetManifest(BaseModel):
     label_distribution: Dict[str, int]
     claim_ids: List[int]
     description: str = "ConsensusX Stratified Development Sample"
+
+
+class AgentRole(str, Enum):
+    """Roles assumed by agents in ConsensusX."""
+    VERIFIER = "verifier"
+    DEBATER = "debater"
+    MODERATOR = "moderator"
+    ADVERSARY = "adversary"
+
+
+class DebaterTurnOutput(BaseModel):
+    """Structured output for a single agent's turn in a multi-round debate."""
+    agent_id: str
+    round_number: int
+    predicted_label: FEVERLabel
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    evidence: str = Field(default="", description="Strict factual evidence observed or cited")
+    inference: str = Field(default="", description="Logical deductions derived from evidence")
+    uncertainty: str = Field(default="", description="Known gaps, ambiguities, or reasons for doubt")
+    rebuttal: Optional[str] = Field(default=None, description="Challenges to other debaters' unsupported assertions")
+    cited_evidence: List[str] = Field(default_factory=list, description="Citations to source documents/sentences")
+    verdict_revised: bool = Field(default=False, description="Whether this turn reflects a revised verdict from prior round")
+    status: str = Field(default="SUCCESS", description="Turn execution status: SUCCESS or FAILED")
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DebateTranscript(BaseModel):
+    """Full turn-by-turn history of a multi-agent structured debate."""
+    claim_id: int
+    claim: str
+    rounds: Dict[int, List[DebaterTurnOutput]] = Field(default_factory=dict)
+    initial_verdicts: Dict[str, FEVERLabel] = Field(default_factory=dict)
+    final_verdicts: Dict[str, FEVERLabel] = Field(default_factory=dict)
+    opinion_shifts: List[Dict[str, Any]] = Field(default_factory=list)
+    total_rounds: int = 0
+
+
+class MajorityVotingOutput(BaseModel):
+    """Aggregated result for Config 2 (Multi-Agent Majority Voting)."""
+    claim_id: int
+    predicted_label: FEVERLabel
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    vote_counts: Dict[str, int] = Field(default_factory=dict)
+    votes: List[ClaimVerificationOutput] = Field(default_factory=list)
+    is_tie: bool = False
+    tie_break_applied: bool = False
+    tie_break_rule: Optional[str] = None
+    is_unanimous: bool = False
+    total_agents: int = 3
+    successful_agents: int = 3
+    failed_agents: int = 0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DebateOutput(BaseModel):
+    """Aggregated result for Config 3 (Multi-Agent Structured Debate)."""
+    claim_id: int
+    predicted_label: FEVERLabel
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    consensus_reached: bool = False
+    is_unanimous: bool = False
+    final_vote_counts: Dict[str, int] = Field(default_factory=dict)
+    transcript: DebateTranscript
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+

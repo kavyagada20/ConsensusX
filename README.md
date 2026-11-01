@@ -152,10 +152,13 @@ ConsensusX/
 │   ├── retrieval/                   # Evidence retrieval interface (Oracle & BM25)
 │   ├── agents/                      # Verifier, Debater, Adversarial, and Judge agents
 │   │   ├── __init__.py
-│   │   └── single_agent.py          # SingleAgentVerifier with structured JSON reasoning
+│   │   ├── single_agent.py          # SingleAgentVerifier with structured JSON reasoning
+│   │   └── debater.py               # DebaterAgent with rebuttal, revision & epistemic separation
 │   ├── pipeline/                    # Orchestrators for Baseline, Voting, Debate, ConsensusX
 │   │   ├── __init__.py
-│   │   └── baseline.py              # BaselinePipeline orchestrator & reporting
+│   │   ├── baseline.py              # BaselinePipeline orchestrator & reporting (Config 1)
+│   │   ├── voting.py                # MajorityVotingPipeline with tie-breaker rules (Config 2)
+│   │   └── debate.py                # DebatePipeline with multi-turn cross-examination (Config 3)
 │   ├── evaluation/                  # Metrics calculation (Accuracy, F1, Confusion Matrix, Abstention)
 │   │   ├── __init__.py
 │   │   └── metrics.py               # Accuracy, Macro-F1, Confusion Matrix, Abstention Metrics
@@ -164,7 +167,8 @@ ConsensusX/
 │       └── logging.py
 ├── scripts/                         # Runnable CLI scripts
 │   ├── prepare_data_sample.py       # Stratified sampling & provenance manifest generator
-│   └── run_baseline.py              # Single-Agent Baseline runner with reporting
+│   ├── run_baseline.py              # Single-Agent Baseline runner with reporting
+│   └── run_experiments.py           # Unified comparative runner across Configs 1, 2, and 3
 ├── tests/                           # Automated unit & integration tests
 │   ├── __init__.py
 │   ├── test_config.py               # Settings & configuration test
@@ -176,9 +180,12 @@ ConsensusX/
 │   ├── test_metrics.py              # Metrics, confusion matrix, & abstention tests
 │   ├── test_mock_llm.py             # Mock LLM generation & chat tests
 │   ├── test_sample_generation.py    # Stratified sampling determinism tests
-│   └── test_single_agent_baseline.py# SingleAgentVerifier & BaselinePipeline tests
+│   ├── test_single_agent_baseline.py# SingleAgentVerifier & BaselinePipeline tests
+│   ├── test_voting.py               # Majority voting, ties & failure handling tests
+│   └── test_debate.py               # Structured debate, rounds & transcript logging tests
 └── outputs/                         # Benchmark outputs, logs, and artifacts (git-ignored)
-    └── baseline_results.json        # Single-Agent Baseline predictions & summary
+    ├── baseline_results.json        # Single-Agent Baseline predictions & summary
+    └── experiment_comparison.json   # Unified comparative benchmark results across Configs 1-3
 ```
 
 ---
@@ -224,23 +231,26 @@ ConsensusX/
   6. Model metadata tracking: `model`, `provider`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `latency_seconds`, and `estimated_cost_usd`.
   7. Benchmark reporting computes Accuracy, Macro-F1, per-class F1, 3x3 Confusion Matrix, and Abstention Metrics, saving output to `outputs/baseline_results.json`.
 
-### Phase 3: Multi-Agent Independent Reasoning & Majority Voting [NEXT]
+### Phase 3: Multi-Agent Independent Reasoning & Majority Voting [COMPLETE]
 - **Objective**: Implement independent parallel reasoning across $N=3$ agents with pluralistic majority voting aggregation.
 - **Acceptance Criteria**:
-  1. Orchestrator executes $N$ agents independently per claim before exposing peer decisions.
-  2. Prompt diversity or sampling temperature ($T=0.3$) induces natural variance among honest agents.
-  3. Deterministic voting aggregator computes final verdict with documented, consistent tie-breaking rules.
-  4. Logging records individual agent votes, split decisions, confidence spreads, and unanimous vs. non-unanimous counts.
+  1. Orchestrator executes $N$ agents independently per claim before exposing peer decisions (`MajorityVotingPipeline`).
+  2. Deterministic voting aggregator (`aggregate_majority_votes`) computes final verdict with documented tie-breaking rules:
+     - Primary tie-breaker: Highest confidence-weighted vote sum.
+     - Secondary tie-breaker: Epistemic safety default (`NOT ENOUGH INFO`).
+  3. Strict failure handling: Failed agent executions (parsing/API errors) are excluded from majority counts and never treated as valid votes.
+  4. Logging records individual agent votes, split decisions, confidence spreads, ties, and unanimous vs. non-unanimous counts.
   5. Computes and reports baseline False Consensus Rate (FCR) on identical evaluation samples.
 
-### Phase 4: Structured Multi-Agent Debate [PLANNED]
-- **Objective**: Implement multi-turn conversational debate with cross-examination and a standard meta-judge.
+### Phase 4: Structured Multi-Agent Debate & Conflict Resolution [COMPLETE]
+- **Objective**: Implement multi-turn conversational debate with cross-examination, epistemic separation, and transcript auditing.
 - **Acceptance Criteria**:
-  1. Multi-turn protocol implemented: Round 1 (Initial positions) $\to$ Round 2 (Cross-examination & rebuttals) $\to$ Round 3 (Closing arguments).
-  2. Debaters inspect prior arguments, challenge assertions, and can update their beliefs across rounds.
-  3. Full debate transcripts preserved turn-by-turn with speaker IDs and reasoning.
-  4. Standard meta-judge reads the transcript and renders a final verdict.
-  5. Quantifies opinion shifts, concession rates, and vulnerability to sycophancy.
+  1. Multi-turn protocol implemented: Round 1 (Independent formulation) $\to$ Round 2+ (Cross-examination & rebuttals).
+  2. Debaters explicitly distinguish between **Evidence** (source facts), **Inference** (logical deductions), and **Uncertainty** (epistemic gaps).
+  3. Debaters inspect prior arguments, challenge unsupported assertions, and can update/revise their beliefs across rounds (`verdict_revised`).
+  4. Full debate transcripts preserved turn-by-turn with speaker IDs, arguments, evidence references, and round numbers (`DebateTranscript`).
+  5. Consensus aggregation computes winning verdict, tracks opinion shifts, consensus rate, and False Consensus Rate (FCR).
+  6. Configurable committee size (`num_agents`) and bounded debate rounds (`max_rounds`).
 
 ### Phase 5: RAG & Evidence Grounding [PLANNED]
 - **Objective**: Integrate passage retrieval and strict citation requirements for all debater claims.
@@ -357,7 +367,25 @@ python scripts/run_baseline.py --provider xai --model grok-2 --limit 300
 
 Output results, confusion matrix, token costs, and claim-level predictions are automatically saved to `outputs/baseline_results.json`.
 
-### 6. Run Automated Tests
+### 6. Step C: Run Multi-Agent Experiments & Side-by-Side Comparison
+Execute and compare all three configurations (Single-Agent, Majority Voting, and Structured Debate) on the exact same dataset sample:
+
+#### Offline / Mock Mode (Zero Cost):
+```bash
+python scripts/run_experiments.py --provider mock --limit 10
+```
+
+#### Live Evaluation (Google Gemini / xAI Grok):
+```bash
+# Compare on 20 claims with Google Gemini (3 agents, 2 debate rounds)
+python scripts/run_experiments.py --provider gemini --model gemini-2.0-flash --num-agents 3 --debate-rounds 2 --limit 20
+
+# Run specific configurations only
+python scripts/run_experiments.py --configs voting debate --provider xai --model grok-2 --limit 15
+```
+Comparative metrics (Accuracy, Macro-F1, False Consensus Rate, Latency, and Cost) are printed in a unified comparison table and saved to `outputs/experiment_comparison.json`.
+
+### 7. Run Automated Tests
 Execute the full test suite offline:
 ```bash
 python -m pytest
