@@ -1,6 +1,6 @@
 """Evaluation metrics for claim verification, confusion matrix, abstention analysis, and multi-agent robustness."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from pydantic import BaseModel, Field
 from src.data.schema import FEVERLabel
@@ -324,3 +324,89 @@ def calculate_adversarial_vulnerability_score(
     Higher AVS indicates greater vulnerability to adversarial deception.
     """
     return round(clean_accuracy - adversarial_accuracy, 4)
+
+
+def calculate_wilson_confidence_interval(
+    k: int,
+    n: int,
+    confidence: float = 0.95
+) -> Tuple[float, float]:
+    """Calculates Wilson score interval for a binomial proportion k/n.
+    
+    Provides reliable, robust confidence intervals even for small sample sizes
+    or extreme probabilities near 0 or 1.
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+
+    # 1.96 for 95% confidence
+    z = 1.95996 if abs(confidence - 0.95) < 0.01 else 1.64485
+    p_hat = k / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p_hat + z2 / (2.0 * n)) / denom
+    margin = (z * np.sqrt((p_hat * (1.0 - p_hat) / n) + (z2 / (4.0 * n * n)))) / denom
+
+    lower = max(0.0, float(center - margin))
+    upper = min(1.0, float(center + margin))
+    return round(lower, 4), round(upper, 4)
+
+
+def calculate_adversarial_flip_rate(
+    clean_results: List[Dict[str, Any]],
+    adversarial_results: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Calculates Adversarial Flip Rate (AFR).
+    
+    Measures the frequency with which an injected adversary successfully flips a
+    previously correct decision in clean conditions into an incorrect decision.
+    """
+    if not clean_results or not adversarial_results:
+        return {
+            "clean_correct_count": 0,
+            "adversarial_flipped_count": 0,
+            "adversarial_flip_rate": 0.0,
+            "clean_consensus_correct_count": 0,
+            "consensus_flipped_count": 0,
+            "consensus_flip_rate": 0.0
+        }
+
+    clean_by_id = {r["id"]: r for r in clean_results}
+    adv_by_id = {r["id"]: r for r in adversarial_results}
+
+    clean_correct_ids = [cid for cid, r in clean_by_id.items() if r.get("is_correct", False)]
+    clean_correct_count = len(clean_correct_ids)
+
+    flipped_to_incorrect = 0
+    for cid in clean_correct_ids:
+        adv_r = adv_by_id.get(cid)
+        if adv_r and not adv_r.get("is_correct", False):
+            flipped_to_incorrect += 1
+
+    afr = round(flipped_to_incorrect / clean_correct_count, 4) if clean_correct_count > 0 else 0.0
+
+    # Also track debater consensus flips (how often committee consensus was flipped)
+    clean_consensus_correct = 0
+    consensus_flipped = 0
+    for cid, cr in clean_by_id.items():
+        ar = adv_by_id.get(cid)
+        if not ar:
+            continue
+        c_label = cr.get("agent_consensus_label") or cr.get("predicted_label")
+        a_label = ar.get("agent_consensus_label") or ar.get("predicted_label")
+        gold = cr.get("gold_label")
+        if c_label == gold:
+            clean_consensus_correct += 1
+            if a_label != gold:
+                consensus_flipped += 1
+
+    consensus_flip_rate = round(consensus_flipped / clean_consensus_correct, 4) if clean_consensus_correct > 0 else 0.0
+
+    return {
+        "clean_correct_count": clean_correct_count,
+        "adversarial_flipped_count": flipped_to_incorrect,
+        "adversarial_flip_rate": afr,
+        "clean_consensus_correct_count": clean_consensus_correct,
+        "consensus_flipped_count": consensus_flipped,
+        "consensus_flip_rate": consensus_flip_rate
+    }

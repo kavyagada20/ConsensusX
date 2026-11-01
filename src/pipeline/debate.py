@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agents.debater import DebaterAgent, DEBATE_PROMPT_VERSION
+from src.agents.adversary import AdversaryAgent
 from src.data.schema import (
     DebateOutput,
     DebateTranscript,
@@ -96,25 +97,43 @@ class DebatePipeline:
         max_rounds: int = 2,
         prompt_version: str = DEBATE_PROMPT_VERSION,
         agent_clients: Optional[List[BaseLLMClient]] = None,
-        retriever: Optional[Any] = None
+        retriever: Optional[Any] = None,
+        inject_adversary: bool = False,
+        adversary_persona: str = "persuasive_contrarian",
+        adversary_strength: str = "assertive",
+        adversary_idx: int = 1,
     ):
         self.llm_client = llm_client
         self.num_agents = max(2, num_agents)
         self.max_rounds = max(1, max_rounds)
         self.prompt_version = prompt_version
         self.retriever = retriever
+        self.inject_adversary = inject_adversary
+        self.adversary_persona = adversary_persona
+        self.adversary_strength = adversary_strength
+        self.adversary_idx = adversary_idx
 
         # Initialize debate panel
-        self.debaters: List[DebaterAgent] = []
+        self.debaters: List[Any] = []
         for i in range(self.num_agents):
-            client = agent_clients[i] if agent_clients and i < len(agent_clients) else llm_client
-            self.debaters.append(
-                DebaterAgent(
-                    agent_id=f"debater_{i+1}",
-                    llm_client=client,
-                    prompt_version=prompt_version
+            if self.inject_adversary and i == self.adversary_idx:
+                self.debaters.append(
+                    AdversaryAgent(
+                        agent_id=f"debater_{i+1}",
+                        llm_client=llm_client,
+                        persona=self.adversary_persona,
+                        attack_strength=self.adversary_strength,
+                    )
                 )
-            )
+            else:
+                client = agent_clients[i] if agent_clients and i < len(agent_clients) else llm_client
+                self.debaters.append(
+                    DebaterAgent(
+                        agent_id=f"debater_{i+1}",
+                        llm_client=client,
+                        prompt_version=prompt_version
+                    )
+                )
 
     def run_debate(
         self,

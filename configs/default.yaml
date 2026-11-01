@@ -70,5 +70,12 @@ adaptive_stopping:
   require_evidence_grounding: true
   stop_on_unanimous_only_if_grounded: true
 
+adversary:
+  enabled: false
+  persona: "persuasive_contrarian" # Options: persuasive_contrarian, citation_distorter
+  attack_strength: "assertive"     # Options: assertive, subtle
+  agent_index: 1                   # 0-indexed position in committee
+
+
 
 

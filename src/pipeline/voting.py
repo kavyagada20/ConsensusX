@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.agents.single_agent import SingleAgentVerifier
+from src.agents.adversary import AdversaryAgent
 from src.data.schema import ClaimVerificationOutput, FEVERLabel, FEVERRecord, MajorityVotingOutput
 from src.evaluation.metrics import (
     calculate_classification_metrics,
@@ -141,24 +142,42 @@ class MajorityVotingPipeline:
         num_agents: int = 3,
         prompt_version: str = VOTING_PROMPT_VERSION,
         agent_clients: Optional[List[BaseLLMClient]] = None,
-        retriever: Optional[Any] = None
+        retriever: Optional[Any] = None,
+        inject_adversary: bool = False,
+        adversary_persona: str = "persuasive_contrarian",
+        adversary_strength: str = "assertive",
+        adversary_idx: int = 1,
     ):
         self.llm_client = llm_client
         self.num_agents = max(1, num_agents)
         self.prompt_version = prompt_version
         self.retriever = retriever
+        self.inject_adversary = inject_adversary
+        self.adversary_persona = adversary_persona
+        self.adversary_strength = adversary_strength
+        self.adversary_idx = adversary_idx
 
         # Initialize committee of independent verifiers
-        self.verifiers: List[SingleAgentVerifier] = []
+        self.verifiers: List[Any] = []
         for i in range(self.num_agents):
-            client = agent_clients[i] if agent_clients and i < len(agent_clients) else llm_client
-            self.verifiers.append(
-                SingleAgentVerifier(
-                    llm_client=client,
-                    agent_id=f"voting_agent_{i+1}",
-                    prompt_version=prompt_version
+            if self.inject_adversary and i == self.adversary_idx:
+                self.verifiers.append(
+                    AdversaryAgent(
+                        agent_id=f"voting_agent_{i+1}",
+                        llm_client=llm_client,
+                        persona=self.adversary_persona,
+                        attack_strength=self.adversary_strength,
+                    )
                 )
-            )
+            else:
+                client = agent_clients[i] if agent_clients and i < len(agent_clients) else llm_client
+                self.verifiers.append(
+                    SingleAgentVerifier(
+                        llm_client=client,
+                        agent_id=f"voting_agent_{i+1}",
+                        prompt_version=prompt_version
+                    )
+                )
 
     def evaluate_records(
         self,

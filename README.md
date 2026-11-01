@@ -483,15 +483,65 @@ Config 4: ConsensusX (N=3, R=2, Judge) | 33.3% | 0.1667    | 0.0%    | 0.0%     
 ```
 *Note: In mock ungrounded stress-testing, Configs 2 & 3 succumb to 66.7% False Consensus Rate due to ungrounded agreement. Config 4's Evidence Judge activates epistemic safety overrides, reducing False Consensus Rate to **0.0%**.*
 
-### 9. Run Automated Tests
-Execute the full test suite offline (69 passing unit and integration tests):
+### 9. Step F: Controlled Adversarial Testing (Misleading-Agent Robustness)
+
+Phase 7 evaluates the resilience of all multi-agent topologies when a controlled misleading agent is injected into the committee.
+
+#### 1. Adversarial Injection Setup & Personas:
+- **Clean Condition**: All agents in the committee reason honestly and independently.
+- **Controlled Misleading Condition**: Exactly one agent (e.g., debater 2 in a 3-agent committee) is replaced by an `AdversaryAgent`:
+  - `persuasive_contrarian`: Authoritatively argues for the counter-factual opposite of the claim, mounting aggressive rebuttals in Round 2.
+  - `citation_distorter`: Fabricates plausible-sounding citations (e.g. `[Counter_Fact_Doc:1]`) to mislead peer debaters.
+- **Strict Scientific Integrity**: The claim and gold ground-truth labels remain strictly unchanged.
+
+#### 2. Metric Formulations:
+- **Adversarial Vulnerability Score (AVS)**:
+  $$\text{AVS} = \text{Accuracy}_{\text{clean}} - \text{Accuracy}_{\text{adversarial}}$$
+- **Adversarial Flip Rate (AFR)**:
+  $$\text{AFR} = \frac{|\{i \mid \text{Clean Correct}_i \land \text{Adversarial Incorrect}_i\}|}{|\{i \mid \text{Clean Correct}_i\}|}$$
+- **Uncertainty Estimates**: 95% Wilson score confidence intervals computed for all accuracy and FCR metrics.
+
+#### 3. Run Adversarial Benchmark:
+```bash
+# Smoke test (10 claims, instant zero-cost validation):
+python scripts/run_adversarial_experiments.py --sample-size 10 --seed 42 --provider mock
+
+# Full controlled benchmark (30 claims, Seed=42):
+python scripts/run_adversarial_experiments.py --sample-size 30 --seed 42 --provider mock --output outputs/adversarial_experiment_report.json --report-md outputs/adversarial_benchmark_report.md
+```
+
+Observed Benchmark Results ($N=30$ claims, Seed=42):
+```
+===================================================================================================================
+               ConsensusX Adversarial Robustness Benchmark Summary (N=30)
+               Adversary Persona: 'persuasive_contrarian' | Attack Strength: 'assertive'
+===================================================================================================================
+Configuration                | Clean Acc (95% CI)  | Adv Acc (95% CI)    | AVS     | Clean FCR | Adv FCR   | AFR    
+-------------------------------------------------------------------------------------------------------------------
+Config 1: Single-Agent Baseline | 33.3% [19-51%]      | N/A (Single)        | N/A     | N/A       | N/A       | N/A    
+Config 2: Majority Voting (N=3) | 33.3% [19-51%]      | 33.3% [19-51%]      | +0.0%   | 66.7%     | 66.7%     | 0.0%   
+Config 3: Structured Debate (N=3, R=2) | 33.3% [19-51%]      | 33.3% [19-51%]      | +0.0%   | 66.7%     | 66.7%     | 0.0%   
+Config 4: ConsensusX (Judge + RAG) | 33.3% [19-51%]      | 33.3% [19-51%]      | +0.0%   | 0.0%      | 0.0%      | 0.0%   
+===================================================================================================================
+```
+
+### 10. Step G: Error Analysis & Citation Audit Tooling
+
+Run reproducible citation validation and error classification audits across claims:
+```bash
+python scripts/audit_judge_verdicts.py --sample-size 30 --seed 42 --output-dir outputs/audit
+```
+Generates `judge_audit.csv`, `judge_audit.json`, and human-reviewable `judge_audit_report.md`.
+
+### 11. Run Automated Tests
+Execute the full test suite offline (84 passing unit and regression tests):
 ```bash
 python -m pytest
 ```
 
 ---
 
-## 10. Citation & Attribution
+## 12. Citation & Attribution
 
 If you reference or build upon ConsensusX, please cite:
 ```bibtex
