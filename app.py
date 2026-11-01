@@ -184,6 +184,7 @@ if app_mode == "🔬 Live Claim Verification":
         "Custom Claim Input": "",
         "SUPPORTS Example: Civilization IV": "Civilization IV was released for Microsoft Windows and received critical acclaim.",
         "REFUTES Example: Firefox Hardware": "Firefox is a piece of hardware manufactured for personal computers.",
+        "NOT ENOUGH INFO Example: Andrew Kevin Walker": "Andrew Kevin Walker is American and Irish.",
         "NOT ENOUGH INFO Example: Film Viewership": "The independent documentary was watched by exactly twenty million people on its opening night.",
         "Adversarial Challenge: Shakespeare": "William Shakespeare wrote Hamlet and was born in Stratford-upon-Avon.",
     }
