@@ -2,6 +2,7 @@
 Config 1: Single-Agent Baseline
 Config 2: Multi-Agent Independent Majority Voting
 Config 3: Multi-Agent Structured Debate
+Config 4: ConsensusX (Structured Debate + RAG + Evidence-Based Judge + Adaptive Stopping)
 """
 
 import argparse
@@ -19,6 +20,7 @@ from src.data.loader import FEVERDataLoader
 from src.data.schema import FEVERRecord
 from src.llm.factory import get_llm_client
 from src.pipeline.baseline import BaselinePipeline
+from src.pipeline.consensus_x import ConsensusXPipeline
 from src.pipeline.debate import DebatePipeline
 from src.pipeline.voting import MajorityVotingPipeline
 from src.utils.logging import get_logger
@@ -28,25 +30,32 @@ logger = get_logger("run_experiments")
 
 def print_comparison_table(results_by_config: Dict[str, Dict[str, Any]]) -> None:
     """Prints a structured ASCII comparison table of benchmark configurations."""
-    print("\n" + "=" * 90)
-    print("                    ConsensusX Benchmark Comparison Summary")
-    print("=" * 90)
-    print(f"{'Configuration':<35} | {'Accuracy':<10} | {'Macro-F1':<10} | {'FCR':<8} | {'Avg Latency':<12} | {'Total Cost':<10}")
-    print("-" * 90)
+    print("\n" + "=" * 105)
+    print("                              ConsensusX Benchmark Comparison Summary")
+    print("=" * 105)
+    print(f"{'Configuration':<34} | {'Accuracy':<9} | {'Macro-F1':<9} | {'FCR':<7} | {'Grounding':<10} | {'Avg Lat':<8} | {'Cost':<9} | {'Rounds':<6}")
+    print("-" * 105)
 
     for cfg_name, summary in results_by_config.items():
         acc = f"{summary.get('accuracy', 0.0) * 100:.1f}%"
         f1 = f"{summary.get('macro_f1', 0.0):.4f}"
         fcr_val = summary.get("false_consensus_rate")
         fcr = f"{fcr_val * 100:.1f}%" if fcr_val is not None else "N/A"
+        grd_val = summary.get("citation_metrics", {}).get("grounding_rate")
+        grd = f"{grd_val * 100:.1f}%" if grd_val is not None else "N/A"
         lat = f"{summary.get('performance', {}).get('avg_latency_per_claim', 0.0):.2f}s"
         cost = f"${summary.get('token_usage', {}).get('total_estimated_cost_usd', 0.0):.4f}"
-        print(f"{cfg_name:<35} | {acc:<10} | {f1:<10} | {fcr:<8} | {lat:<12} | {cost:<10}")
+        rounds_val = summary.get("adaptive_stopping", {}).get("avg_rounds_used")
+        if rounds_val is None:
+            rounds_val = 1 if "Baseline" in cfg_name or "Voting" in cfg_name else summary.get("max_rounds", "N/A")
+        rounds = f"{rounds_val}"
+        print(f"{cfg_name:<34} | {acc:<9} | {f1:<9} | {fcr:<7} | {grd:<10} | {lat:<8} | {cost:<9} | {rounds:<6}")
 
-    print("=" * 90)
-    print("  * Note: FCR = False Consensus Rate (group agreement on an incorrect verdict).")
+    print("=" * 105)
+    print("  * FCR = False Consensus Rate (group agreement on an incorrect verdict).")
+    print("  * Grounding = Proportion of decisions verified against authentic source citations.")
     print("  * Identical evaluation samples and ground-truth scoring used across all configurations.")
-    print("=" * 90 + "\n")
+    print("=" * 105 + "\n")
 
 
 def main() -> None:
@@ -61,8 +70,8 @@ def main() -> None:
         "--configs",
         nargs="+",
         default=["all"],
-        choices=["all", "baseline", "voting", "debate"],
-        help="Configurations to run: 'all', 'baseline', 'voting', 'debate'."
+        choices=["all", "baseline", "voting", "debate", "consensus_x"],
+        help="Configurations to run: 'all', 'baseline', 'voting', 'debate', 'consensus_x'."
     )
     parser.add_argument(
         "--provider",
@@ -148,7 +157,7 @@ def main() -> None:
 
     selected_configs = args.configs
     if "all" in selected_configs:
-        selected_configs = ["baseline", "voting", "debate"]
+        selected_configs = ["baseline", "voting", "debate", "consensus_x"]
 
     results_by_config: Dict[str, Dict[str, Any]] = {}
     overall_start = time.perf_counter()
@@ -201,6 +210,19 @@ def main() -> None:
         )
         debate_summary = debate_pipeline.evaluate_records(records=records)
         results_by_config[f"Config 3: Debate (N={args.num_agents}, R={args.debate_rounds})"] = debate_summary
+
+    # Config 4: ConsensusX (Debate + RAG + Judge + Adaptive Stopping)
+    if "consensus_x" in selected_configs:
+        logger.info(">>> Running Config 4: ConsensusX (Debate + RAG + Judge + Adaptive Stopping)...")
+        cx_pipeline = ConsensusXPipeline(
+            llm_client=llm_client,
+            retriever=evidence_retriever,
+            num_agents=args.num_agents,
+            max_rounds=args.debate_rounds,
+            min_rounds=1
+        )
+        cx_summary = cx_pipeline.evaluate_records(records=records)
+        results_by_config[f"Config 4: ConsensusX (N={args.num_agents}, R={args.debate_rounds}, Judge)"] = cx_summary
 
     total_wall_time = time.perf_counter() - overall_start
 

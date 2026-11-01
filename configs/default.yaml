@@ -56,4 +56,19 @@ retrieval:
   top_k: 5
   batch_size: 128
 
+judge:
+  prompt_version: "v1.0.0"
+  agent_id: "evidence_judge"
+  require_valid_citation: true
+  downgrade_ungrounded_verdicts: true
+
+adaptive_stopping:
+  enabled: true
+  min_rounds: 1
+  max_rounds: 3
+  stability_threshold: 1.0
+  require_evidence_grounding: true
+  stop_on_unanimous_only_if_grounded: true
+
+
 

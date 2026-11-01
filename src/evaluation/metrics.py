@@ -192,17 +192,41 @@ def calculate_classification_metrics(
 def calculate_false_consensus_rate(
     y_true: List[FEVERLabel],
     team_verdicts: List[List[FEVERLabel]],
-    strict_unanimous: bool = False
-) -> float:
+    strict_unanimous: bool = False,
+    return_details: bool = False
+) -> Any:
     """Calculates False Consensus Rate (FCR).
     
-    Proportion of evaluated claims where multi-agent group reached agreement (majority or unanimity)
-    on an INCORRECT label.
+    Formal Mathematical Formulations:
+    1. Overall FCR (FCR_total):
+       FCR_total = |{i in D : ConsensusReached_i and L_consensus_i != L_gold_i}| / |D|
+       The proportion of all evaluated claims where the multi-agent committee reached
+       agreement (majority or unanimity) on an INCORRECT verdict.
+
+    2. Conditional FCR (FCR_cond):
+       FCR_cond = |{i in D : ConsensusReached_i and L_consensus_i != L_gold_i}| / |{i in D : ConsensusReached_i}|
+       The proportion of consensus decisions that were factually incorrect (i.e. error rate
+       strictly conditioned on consensus having occurred).
+
+    Args:
+        y_true: Ground truth FEVER labels.
+        team_verdicts: List of agent vote lists for each claim.
+        strict_unanimous: If True, requires unanimous consensus (100%); otherwise majority (>50%).
+        return_details: If True, returns a dict with both overall and conditional FCR.
     """
     if not y_true or len(y_true) != len(team_verdicts):
+        if return_details:
+            return {
+                "overall_fcr": 0.0,
+                "conditional_fcr": 0.0,
+                "consensus_count": 0,
+                "false_consensus_count": 0,
+                "total_evaluated": len(y_true) if y_true else 0
+            }
         return 0.0
 
     false_consensus_count = 0
+    consensus_count = 0
     total = len(y_true)
 
     for yt, votes in zip(y_true, team_verdicts):
@@ -216,10 +240,78 @@ def calculate_false_consensus_rate(
         team_size = len(votes)
 
         agreed = (top_count == team_size) if strict_unanimous else (top_count > team_size / 2)
-        if agreed and top_label != yt:
-            false_consensus_count += 1
+        if agreed:
+            consensus_count += 1
+            if top_label != yt:
+                false_consensus_count += 1
 
-    return round(false_consensus_count / total, 4)
+    overall_fcr = round(false_consensus_count / total, 4) if total > 0 else 0.0
+    conditional_fcr = round(false_consensus_count / consensus_count, 4) if consensus_count > 0 else 0.0
+
+    if return_details:
+        return {
+            "overall_fcr": overall_fcr,
+            "conditional_fcr": conditional_fcr,
+            "consensus_count": consensus_count,
+            "false_consensus_count": false_consensus_count,
+            "total_evaluated": total
+        }
+
+    return overall_fcr
+
+
+def calculate_citation_metrics(
+    judge_outputs: List[Any]
+) -> Dict[str, Any]:
+    """Calculates citation validity, unsupported citation rate, and evidence grounding.
+    
+    A claim decision is defined as grounded if:
+    - For SUPPORTS/REFUTES: at least one valid retrieved passage was cited and zero unsupported citations.
+    - For NOT ENOUGH INFO: no unsupported citations were fabricated.
+    """
+    total_evaluated = len(judge_outputs)
+    if total_evaluated == 0:
+        return {
+            "total_citations": 0,
+            "valid_citations": 0,
+            "unsupported_citations": 0,
+            "citation_validity_rate": 1.0,
+            "unsupported_citation_rate": 0.0,
+            "grounding_rate": 0.0
+        }
+
+    total_citations = 0
+    valid_citations = 0
+    unsupported_citations = 0
+    grounded_claims = 0
+
+    for out in judge_outputs:
+        v_c = getattr(out, "valid_citations", []) or []
+        u_c = getattr(out, "unsupported_citations", []) or []
+        total_citations += len(v_c) + len(u_c)
+        valid_citations += len(v_c)
+        unsupported_citations += len(u_c)
+
+        pred_lbl = getattr(out, "predicted_label", None)
+        if pred_lbl in (FEVERLabel.SUPPORTS, FEVERLabel.REFUTES):
+            if len(v_c) > 0 and len(u_c) == 0:
+                grounded_claims += 1
+        elif pred_lbl == FEVERLabel.NOT_ENOUGH_INFO:
+            if len(u_c) == 0:
+                grounded_claims += 1
+
+    validity_rate = round(valid_citations / total_citations, 4) if total_citations > 0 else 1.0
+    unsupported_rate = round(unsupported_citations / total_citations, 4) if total_citations > 0 else 0.0
+    grounding_rate = round(grounded_claims / total_evaluated, 4) if total_evaluated > 0 else 0.0
+
+    return {
+        "total_citations": total_citations,
+        "valid_citations": valid_citations,
+        "unsupported_citations": unsupported_citations,
+        "citation_validity_rate": validity_rate,
+        "unsupported_citation_rate": unsupported_rate,
+        "grounding_rate": grounding_rate
+    }
 
 
 def calculate_adversarial_vulnerability_score(

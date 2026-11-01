@@ -112,6 +112,7 @@ class AgentRole(str, Enum):
     DEBATER = "debater"
     MODERATOR = "moderator"
     ADVERSARY = "adversary"
+    JUDGE = "judge"
 
 
 class DebaterTurnOutput(BaseModel):
@@ -169,4 +170,50 @@ class DebateOutput(BaseModel):
     final_vote_counts: Dict[str, int] = Field(default_factory=dict)
     transcript: DebateTranscript
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class JudgeEvaluationOutput(BaseModel):
+    """Structured evaluation output returned by the Evidence-Based Judge."""
+    claim_id: int
+    predicted_label: FEVERLabel
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    rationale: str = Field(default="", description="Reasoning explaining why evidence supports, refutes, or is insufficient.")
+    cited_evidence: List[str] = Field(default_factory=list, description="Passage IDs cited by the judge.")
+    valid_citations: List[str] = Field(default_factory=list, description="Citations confirmed present in retrieved evidence.")
+    unsupported_citations: List[str] = Field(default_factory=list, description="Citations not found in retrieved evidence.")
+    is_citation_valid: bool = Field(default=True, description="Whether all cited evidence is grounded and verifiable.")
+    conflicting_evidence: Optional[str] = Field(default=None, description="Contradictions identified between evidence passages.")
+    missing_evidence: bool = Field(default=False, description="Flag indicating if decisive evidence is missing.")
+    uncertainty: str = Field(default="", description="Epistemic gaps, ambiguities, or reasons for doubt.")
+    status: str = Field(default="SUCCESS", description="Execution status: SUCCESS or FAILED.")
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AdaptiveStoppingResult(BaseModel):
+    """Evaluation result of adaptive debate stopping criteria."""
+    should_stop: bool
+    reason: str
+    round_number: int
+    evidence_sufficient: bool = False
+    stability_reached: bool = False
+    consensus_reached: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ConsensusXOutput(BaseModel):
+    """Aggregated benchmark output for Config 4: Debate + RAG + Judge + Adaptive Stopping."""
+    claim_id: int
+    predicted_label: FEVERLabel
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    judge_output: JudgeEvaluationOutput
+    stopping_reason: str
+    rounds_used: int
+    max_rounds: int
+    retrieved_passages_count: int = 0
+    transcript: DebateTranscript
+    agent_consensus_reached: bool = False
+    agent_consensus_label: Optional[FEVERLabel] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
 

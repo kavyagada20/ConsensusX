@@ -12,6 +12,9 @@ from src.data.schema import (
     DebateTranscript,
     MajorityVotingOutput,
     DebateOutput,
+    JudgeEvaluationOutput,
+    AdaptiveStoppingResult,
+    ConsensusXOutput,
 )
 from src.data.loader import FEVERDataLoader, check_data_leakage
 
@@ -27,6 +30,9 @@ __all__ = [
     "DebateTranscript",
     "MajorityVotingOutput",
     "DebateOutput",
+    "JudgeEvaluationOutput",
+    "AdaptiveStoppingResult",
+    "ConsensusXOutput",
     "FEVERDataLoader",
     "check_data_leakage",
 ]
