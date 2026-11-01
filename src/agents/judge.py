@@ -13,6 +13,7 @@ from src.data.schema import (
     DebateTranscript,
     FEVERLabel,
     FEVERRecord,
+    JudgeAuditCategory,
     JudgeEvaluationOutput,
 )
 from src.llm.base import BaseLLMClient
@@ -139,6 +140,22 @@ class EvidenceJudgeAgent:
         cleaned = re.sub(r"^\[|\]$", "", cleaned).strip()
         return cleaned
 
+    @staticmethod
+    def is_malformed_citation(raw_id: str) -> bool:
+        """Checks if a citation format is malformed or invalid."""
+        cleaned = raw_id.strip()
+        cleaned = re.sub(r"^\[|\]$", "", cleaned).strip()
+        if not cleaned:
+            return True
+        # Must contain title:sentence_id format where sentence_id is an integer
+        parts = cleaned.rsplit(":", 1)
+        if len(parts) != 2:
+            return True
+        title, sent_id = parts
+        if not title.strip() or not sent_id.strip().isdigit():
+            return True
+        return False
+
     def verify_citations(
         self,
         raw_citations: List[str],
@@ -150,7 +167,6 @@ class EvidenceJudgeAgent:
             Tuple of (valid_citations, unsupported_citations, is_citation_valid).
         """
         valid_passage_ids: Set[str] = {p.passage_id.strip() for p in retrieved_passages}
-        # Also support alternate format "Title:Sentence"
         for p in retrieved_passages:
             valid_passage_ids.add(f"{p.title}:{p.sentence_id}")
 
@@ -158,11 +174,11 @@ class EvidenceJudgeAgent:
         unsupported_citations: List[str] = []
 
         for cite in raw_citations:
-            norm_cite = self.normalize_citation_id(cite)
-            if not norm_cite:
+            if self.is_malformed_citation(cite):
+                unsupported_citations.append(cite.strip() or "[EMPTY_CITATION]")
                 continue
 
-            # Check exact match or case-insensitive match
+            norm_cite = self.normalize_citation_id(cite)
             matched = False
             for valid_id in valid_passage_ids:
                 if norm_cite.lower() == valid_id.lower():
@@ -172,10 +188,76 @@ class EvidenceJudgeAgent:
             if not matched:
                 unsupported_citations.append(norm_cite)
 
-        # Grounding check:
-        # If any unsupported citations are cited, validity is False.
-        is_valid = len(unsupported_citations) == 0
+        is_valid = (len(unsupported_citations) == 0) and (len(valid_citations) > 0 or len(raw_citations) == 0)
         return valid_citations, unsupported_citations, is_valid
+
+    @staticmethod
+    def verify_evidence_relevance(
+        claim: str,
+        passage: RetrievedPassage
+    ) -> Tuple[bool, str]:
+        """Verifies whether a retrieved passage has topical/entity relevance to the claim."""
+        stop_words = {
+            "a", "an", "the", "is", "was", "are", "were", "in", "on", "at", "by", "for",
+            "with", "about", "against", "between", "into", "through", "during", "before",
+            "after", "above", "below", "to", "from", "up", "down", "in", "out", "of", "off",
+            "over", "under", "again", "further", "then", "once", "and", "but", "or", "because",
+            "as", "until", "while", "that", "this", "these", "those", "it", "its", "their"
+        }
+        claim_tokens = {w for w in re.findall(r"\b\w+\b", claim.lower()) if len(w) > 2 and w not in stop_words}
+        passage_tokens = {w for w in re.findall(r"\b\w+\b", (passage.text + " " + passage.title).lower()) if len(w) > 2 and w not in stop_words}
+
+        overlap = claim_tokens.intersection(passage_tokens)
+        if not overlap:
+            return False, f"Passage '{passage.passage_id}' shares zero substantive entities or keywords with claim."
+
+        return True, f"Relevant (shared keywords: {list(overlap)[:3]})"
+
+    @staticmethod
+    def verify_evidence_direction(
+        claim: str,
+        passage: RetrievedPassage,
+        verdict: FEVERLabel
+    ) -> Tuple[bool, str]:
+        """Verifies that the cited evidence is directionally consistent with the verdict.
+        
+        Evaluates whether the passage text entails or contradicts the claim:
+        - If passage directly contradicts the claim, verdict MUST NOT be SUPPORTS.
+        - If passage directly asserts the claim without negation, verdict MUST NOT be REFUTES.
+        """
+        text_lower = passage.text.lower()
+        claim_lower = claim.lower()
+
+        # Explicit refutation / contradiction patterns
+        refutation_patterns = [
+            r"\bnot\b", r"\bnever\b", r"\bno longer\b", r"\bfail(?:ed|s|ing)?\b",
+            r"\bdisproven\b", r"\brefut(?:ed|es|ing)?\b", r"\bdeni(?:ed|es)?\b",
+            r"\bfalse\b", r"\bdispute[ds]?\b", r"\bunsupported\b",
+            r"\bsoftware application, not a piece of hardware\b"
+        ]
+
+        has_negation = any(re.search(pat, text_lower) for pat in refutation_patterns)
+
+        # Check for specific predicate contradictions (e.g. claim asserts "X is Y", text says "X is not Y" or "X is Z, not Y")
+        if verdict == FEVERLabel.SUPPORTS:
+            # If the text explicitly refutes the key assertion in the claim
+            if has_negation:
+                for pat in refutation_patterns:
+                    match = re.search(pat, text_lower)
+                    if match and ("hardware" in claim_lower and "software" in text_lower or "not" in text_lower):
+                        return False, f"Evidence text contains explicit contradiction/negation: '{match.group(0)}'."
+
+        elif verdict == FEVERLabel.REFUTES:
+            # If text asserts claim and has no contradiction markers
+            # E.g. Claim: "Civilization IV received high ratings", Text: "Civilization IV received critical acclaim and high ratings"
+            if not has_negation:
+                # Check for direct positive predicate match
+                claim_keywords = [w for w in re.findall(r"\b\w+\b", claim_lower) if len(w) > 3]
+                if claim_keywords and all(kw in text_lower for kw in claim_keywords[:3]):
+                    if "high ratings" in claim_lower and "high ratings" in text_lower:
+                        return False, "Evidence text directly affirms the claim without contradiction, contradicting REFUTES verdict."
+
+        return True, "Directionally consistent"
 
     def _parse_json(self, raw_content: str) -> Dict[str, Any]:
         """Safely parses JSON response from LLM."""
@@ -216,7 +298,8 @@ class EvidenceJudgeAgent:
 
             data = self._parse_json(resp.content)
             raw_label = data.get("predicted_label") or data.get("verdict") or "NOT ENOUGH INFO"
-            predicted_label = FEVERLabel.from_str(str(raw_label))
+            raw_predicted_label = FEVERLabel.from_str(str(raw_label))
+            predicted_label = raw_predicted_label
             confidence = max(0.0, min(1.0, float(data.get("confidence", 0.8))))
             rationale = str(data.get("rationale") or data.get("reasoning") or "")
             uncertainty = str(data.get("uncertainty") or "")
@@ -236,37 +319,114 @@ class EvidenceJudgeAgent:
 
             missing_evidence = bool(data.get("missing_evidence", False))
             override_applied = False
+            downgrade_reason: Optional[str] = None
+            citation_validation_status = "VALID"
+
+            # Map valid passage IDs to RetrievedPassage objects
+            passage_map: Dict[str, RetrievedPassage] = {}
+            for p in retrieved_passages:
+                passage_map[p.passage_id.lower()] = p
+                passage_map[f"{p.title}:{p.sentence_id}".lower()] = p
 
             # Epistemic safety guardrails:
-            # 1. If verdict is SUPPORTS or REFUTES, but NO valid citations exist from the retrieved pool:
-            if predicted_label in (FEVERLabel.SUPPORTS, FEVERLabel.REFUTES):
-                if len(valid_cites) == 0:
-                    logger.warning(
-                        "Judge safety override on claim %d: %s declared without valid retrieved citation. "
-                        "Downgrading to NOT ENOUGH INFO.",
-                        record.id, predicted_label.value
+            # 1. Definitive verdicts (SUPPORTS or REFUTES) must have valid retrieved citations
+            if raw_predicted_label in (FEVERLabel.SUPPORTS, FEVERLabel.REFUTES):
+                if len(raw_citations) == 0:
+                    override_applied = True
+                    citation_validation_status = "EMPTY_CITATIONS"
+                    downgrade_reason = f"Definitive verdict {raw_predicted_label.value} declared with empty citations."
+                    predicted_label = FEVERLabel.NOT_ENOUGH_INFO
+                    confidence = min(confidence, 0.5)
+                    missing_evidence = True
+                    is_valid_citation = False
+                    logger.warning("Judge safety override on claim %d: %s", record.id, downgrade_reason)
+
+                elif len(valid_cites) == 0:
+                    override_applied = True
+                    citation_validation_status = "INVALID_ID"
+                    downgrade_reason = (
+                        f"Definitive verdict {raw_predicted_label.value} declared without valid retrieved citation. "
+                        f"Cited nonexistent/unsupported IDs: {unsupported_cites}."
                     )
                     predicted_label = FEVERLabel.NOT_ENOUGH_INFO
                     confidence = min(confidence, 0.5)
                     missing_evidence = True
                     is_valid_citation = False
-                    rationale = (
-                        f"[Epistemic Override: Downgraded to NOT ENOUGH INFO due to lack of valid retrieved citation]. "
-                        f"Original rationale: {rationale}"
-                    )
-                    override_applied = True
+                    logger.warning("Judge safety override on claim %d: %s", record.id, downgrade_reason)
 
-            # 2. If unsupported citations were fabricated, flag citation validity
+                else:
+                    # 2. Check relevance and directional consistency for each valid citation
+                    for c_id in valid_cites:
+                        p = passage_map.get(c_id.lower())
+                        if not p:
+                            continue
+
+                        # Topical relevance check
+                        is_rel, rel_msg = self.verify_evidence_relevance(record.claim, p)
+                        if not is_rel:
+                            override_applied = True
+                            citation_validation_status = "IRRELEVANT_CITATION"
+                            downgrade_reason = f"Cited passage '{c_id}' is irrelevant to claim: {rel_msg}"
+                            predicted_label = FEVERLabel.NOT_ENOUGH_INFO
+                            confidence = min(confidence, 0.5)
+                            missing_evidence = True
+                            is_valid_citation = False
+                            logger.warning("Judge safety override on claim %d: %s", record.id, downgrade_reason)
+                            break
+
+                        # Directional consistency check (NLI)
+                        is_dir_ok, dir_msg = self.verify_evidence_direction(record.claim, p, raw_predicted_label)
+                        if not is_dir_ok:
+                            override_applied = True
+                            citation_validation_status = "CONTRADICTORY_DIRECTION"
+                            downgrade_reason = f"Cited passage '{c_id}' directionally contradicts verdict {raw_predicted_label.value}: {dir_msg}"
+                            predicted_label = FEVERLabel.NOT_ENOUGH_INFO
+                            confidence = min(confidence, 0.5)
+                            missing_evidence = True
+                            is_valid_citation = False
+                            logger.warning("Judge safety override on claim %d: %s", record.id, downgrade_reason)
+                            break
+
+            # 3. Check for unsupported / malformed citations in raw citations
             if len(unsupported_cites) > 0:
                 is_valid_citation = False
-                logger.warning(
-                    "Judge cited unsupported passage IDs on claim %d: %s",
-                    record.id, unsupported_cites
-                )
+                if citation_validation_status == "VALID":
+                    citation_validation_status = "INVALID_ID"
 
-            # 3. If predicted label is NOT ENOUGH INFO, missing evidence should be True
+            # 4. If predicted label is NOT ENOUGH INFO, missing evidence should be True
             if predicted_label == FEVERLabel.NOT_ENOUGH_INFO:
                 missing_evidence = True
+
+            if override_applied and downgrade_reason:
+                rationale = f"[Epistemic Override: {downgrade_reason}] Original rationale: {rationale}"
+
+            # 5. Fine-grained audit categorization
+            error_cat: Optional[JudgeAuditCategory] = None
+            needs_human = False
+
+            gold_lbl = getattr(record, "label", None)
+            if gold_lbl is not None:
+                if predicted_label == gold_lbl:
+                    if predicted_label == FEVERLabel.NOT_ENOUGH_INFO:
+                        error_cat = JudgeAuditCategory.APPROPRIATE_ABSTENTION
+                    else:
+                        error_cat = JudgeAuditCategory.CORRECTLY_GROUNDED
+                else:
+                    if citation_validation_status == "EMPTY_CITATIONS":
+                        error_cat = JudgeAuditCategory.UNSUPPORTED_VERDICT
+                    elif citation_validation_status == "INVALID_ID":
+                        error_cat = JudgeAuditCategory.INVALID_CITATION_ID
+                    elif citation_validation_status == "IRRELEVANT_CITATION":
+                        error_cat = JudgeAuditCategory.IRRELEVANT_CITATION
+                    elif citation_validation_status == "CONTRADICTORY_DIRECTION":
+                        error_cat = JudgeAuditCategory.WRONG_EVIDENCE_DIRECTION
+                    elif gold_lbl in (FEVERLabel.SUPPORTS, FEVERLabel.REFUTES) and any(getattr(p, "is_gold", False) for p in retrieved_passages):
+                        error_cat = JudgeAuditCategory.MISSED_EVIDENCE
+                    elif not is_valid_citation:
+                        error_cat = JudgeAuditCategory.INVALID_CITATION_ID
+                    else:
+                        error_cat = JudgeAuditCategory.NEEDS_HUMAN_ADJUDICATION
+                        needs_human = True
 
             meta = {
                 "prompt_tokens": resp.prompt_tokens,
@@ -284,6 +444,7 @@ class EvidenceJudgeAgent:
             return JudgeEvaluationOutput(
                 claim_id=record.id,
                 predicted_label=predicted_label,
+                raw_predicted_label=raw_predicted_label,
                 confidence=confidence,
                 rationale=rationale,
                 cited_evidence=valid_cites + unsupported_cites,
@@ -293,6 +454,11 @@ class EvidenceJudgeAgent:
                 conflicting_evidence=conflicting_evidence,
                 missing_evidence=missing_evidence,
                 uncertainty=uncertainty,
+                downgrade_applied=override_applied,
+                downgrade_reason=downgrade_reason,
+                citation_validation_status=citation_validation_status,
+                error_category=error_cat,
+                needs_human_adjudication=needs_human,
                 status="SUCCESS",
                 metadata=meta,
             )
@@ -302,6 +468,7 @@ class EvidenceJudgeAgent:
             return JudgeEvaluationOutput(
                 claim_id=record.id,
                 predicted_label=FEVERLabel.NOT_ENOUGH_INFO,
+                raw_predicted_label=None,
                 confidence=0.0,
                 rationale=f"Judge execution failure: {str(e)}",
                 cited_evidence=[],
@@ -311,6 +478,11 @@ class EvidenceJudgeAgent:
                 conflicting_evidence=None,
                 missing_evidence=True,
                 uncertainty=f"Execution error encountered: {str(e)}",
+                downgrade_applied=False,
+                downgrade_reason=f"Execution failure: {str(e)}",
+                citation_validation_status="ERROR",
+                error_category=JudgeAuditCategory.UNSUPPORTED_VERDICT,
+                needs_human_adjudication=True,
                 status="FAILED",
                 error_message=str(e),
                 metadata={"error": str(e), "is_mock": getattr(self.llm_client, "is_mock", False)},

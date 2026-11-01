@@ -419,3 +419,238 @@ def test_consensus_x_pipeline_run(sample_record, retrieved_passages):
     assert out.rounds_used in (1, 2)
     assert out.stopping_reason != ""
 
+
+# ==============================================================================
+# 7. REGRESSION TESTS: AUDIT & CITATION VALIDATION
+# ==============================================================================
+
+def test_malformed_citation_ids(sample_record, retrieved_passages, mock_transcript):
+    """Malformed citation IDs (missing sentence numbers, empty, or invalid syntax) are rejected."""
+    judge = EvidenceJudgeAgent(llm_client=MockLLMClient())
+
+    assert judge.is_malformed_citation("MalformedTitleWithoutSentence") is True
+    assert judge.is_malformed_citation("") is True
+    assert judge.is_malformed_citation("Title:not_a_number") is True
+    assert judge.is_malformed_citation("Firefox:1") is False
+    assert judge.is_malformed_citation("[Firefox:1]") is False
+
+    def malformed_handler(prompt: str) -> str:
+        return (
+            '{"predicted_label": "REFUTES", '
+            '"confidence": 0.90, '
+            '"rationale": "Firefox is not hardware.", '
+            '"cited_evidence": ["MalformedID_No_Number", "Firefox:bad_sent"], '
+            '"missing_evidence": false}'
+        )
+
+    judge_malformed = EvidenceJudgeAgent(llm_client=MockLLMClient(custom_handler=malformed_handler))
+    res = judge_malformed.evaluate(sample_record, retrieved_passages, mock_transcript)
+
+    assert res.predicted_label == FEVERLabel.NOT_ENOUGH_INFO
+    assert res.raw_predicted_label == FEVERLabel.REFUTES
+    assert res.downgrade_applied is True
+    assert res.citation_validation_status == "INVALID_ID"
+    assert len(res.unsupported_citations) == 2
+
+
+def test_irrelevant_citation_downgrades_verdict(sample_record, mock_transcript):
+    """Citations to passages that are topically irrelevant must trigger downgrade to NEI."""
+    irrelevant_passages = [
+        RetrievedPassage(
+            passage_id="Albert_Einstein:2",
+            title="Albert_Einstein",
+            sentence_id=2,
+            text="He developed the theory of relativity, one of the two pillars of modern physics.",
+            score=0.15,
+            rank=1,
+        )
+    ]
+
+    def irrelevant_handler(prompt: str) -> str:
+        return (
+            '{"predicted_label": "REFUTES", '
+            '"confidence": 0.85, '
+            '"rationale": "Relativity has nothing to do with hardware.", '
+            '"cited_evidence": ["Albert_Einstein:2"], '
+            '"missing_evidence": false}'
+        )
+
+    judge = EvidenceJudgeAgent(llm_client=MockLLMClient(custom_handler=irrelevant_handler))
+    res = judge.evaluate(sample_record, irrelevant_passages, mock_transcript)
+
+    assert res.predicted_label == FEVERLabel.NOT_ENOUGH_INFO
+    assert res.raw_predicted_label == FEVERLabel.REFUTES
+    assert res.downgrade_applied is True
+    assert res.citation_validation_status == "IRRELEVANT_CITATION"
+    assert "irrelevant" in res.downgrade_reason.lower()
+
+
+def test_directionally_contradictory_evidence_downgrades_verdict(sample_record, retrieved_passages, mock_transcript):
+    """When evidence explicitly contradicts the claimed verdict (e.g. SUPPORTS with refuting text),
+    the judge must downgrade the verdict to NEI."""
+
+    # Claim: "Firefox is a piece of hardware."
+    # Evidence: "Firefox is a software application, not a piece of hardware." -> REFUTES
+    # Model mistakenly claims SUPPORTS
+    def contradictory_handler(prompt: str) -> str:
+        return (
+            '{"predicted_label": "SUPPORTS", '
+            '"confidence": 0.90, '
+            '"rationale": "The text mentions Firefox and hardware.", '
+            '"cited_evidence": ["Firefox:1"], '
+            '"missing_evidence": false}'
+        )
+
+    judge = EvidenceJudgeAgent(llm_client=MockLLMClient(custom_handler=contradictory_handler))
+    res = judge.evaluate(sample_record, retrieved_passages, mock_transcript)
+
+    assert res.predicted_label == FEVERLabel.NOT_ENOUGH_INFO
+    assert res.raw_predicted_label == FEVERLabel.SUPPORTS
+    assert res.downgrade_applied is True
+    assert res.citation_validation_status == "CONTRADICTORY_DIRECTION"
+    assert "directionally contradicts" in res.downgrade_reason.lower()
+
+
+def test_correctly_grounded_verdict_preserves_label(sample_record, retrieved_passages, mock_transcript):
+    """When verdict is backed by valid, directionally aligned citations, it is preserved."""
+
+    def valid_handler(prompt: str) -> str:
+        return (
+            '{"predicted_label": "REFUTES", '
+            '"confidence": 0.95, '
+            '"rationale": "Firefox:1 explicitly states it is software, not hardware.", '
+            '"cited_evidence": ["Firefox:1"], '
+            '"missing_evidence": false}'
+        )
+
+    judge = EvidenceJudgeAgent(llm_client=MockLLMClient(custom_handler=valid_handler))
+    res = judge.evaluate(sample_record, retrieved_passages, mock_transcript)
+
+    assert res.predicted_label == FEVERLabel.REFUTES
+    assert res.raw_predicted_label == FEVERLabel.REFUTES
+    assert res.downgrade_applied is False
+    assert res.is_citation_valid is True
+    assert res.citation_validation_status == "VALID"
+    assert res.error_category.value == "CORRECTLY_GROUNDED"
+
+
+def test_preserving_raw_verdict_on_validation_failure(sample_record, retrieved_passages, mock_transcript):
+    """Both raw verdict and validated final verdict are preserved for error analysis."""
+
+    def failure_handler(prompt: str) -> str:
+        return (
+            '{"predicted_label": "SUPPORTS", '
+            '"confidence": 0.90, '
+            '"rationale": "Internal speculation without citations.", '
+            '"cited_evidence": [], '
+            '"missing_evidence": false}'
+        )
+
+    judge = EvidenceJudgeAgent(llm_client=MockLLMClient(custom_handler=failure_handler))
+    res = judge.evaluate(sample_record, retrieved_passages, mock_transcript)
+
+    # Raw is SUPPORTS, Final is NOT ENOUGH INFO
+    assert res.raw_predicted_label == FEVERLabel.SUPPORTS
+    assert res.predicted_label == FEVERLabel.NOT_ENOUGH_INFO
+    assert res.downgrade_applied is True
+    assert res.downgrade_reason is not None
+    assert res.citation_validation_status == "EMPTY_CITATIONS"
+
+
+def test_deterministic_stratified_sampling():
+    """Stratified sampling is strictly reproducible and preserves balanced label representation."""
+    from scripts.audit_judge_verdicts import stratified_sample
+
+    records = [
+        FEVERRecord(id=i, claim=f"Claim {i}", label=FEVERLabel.SUPPORTS) for i in range(10)
+    ] + [
+        FEVERRecord(id=10+i, claim=f"Claim {10+i}", label=FEVERLabel.REFUTES) for i in range(10)
+    ] + [
+        FEVERRecord(id=20+i, claim=f"Claim {20+i}", label=FEVERLabel.NOT_ENOUGH_INFO) for i in range(10)
+    ]
+
+    sample1 = stratified_sample(records, sample_size=15, seed=42)
+    sample2 = stratified_sample(records, sample_size=15, seed=42)
+    sample3 = stratified_sample(records, sample_size=15, seed=99)
+
+    assert len(sample1) == 15
+    assert [r.id for r in sample1] == [r.id for r in sample2]  # Exact determinism
+    assert [r.id for r in sample1] != [r.id for r in sample3]  # Seed changes order
+
+    counts = {FEVERLabel.SUPPORTS: 0, FEVERLabel.REFUTES: 0, FEVERLabel.NOT_ENOUGH_INFO: 0}
+    for r in sample1:
+        counts[r.label] += 1
+    assert counts[FEVERLabel.SUPPORTS] == 5
+    assert counts[FEVERLabel.REFUTES] == 5
+    assert counts[FEVERLabel.NOT_ENOUGH_INFO] == 5
+
+
+def test_generate_markdown_report_artifact(tmp_path):
+    """Verifies that generate_markdown_report generates valid markdown with human review demarcation."""
+    from scripts.audit_judge_verdicts import generate_markdown_report
+
+    summary = {
+        "timestamp": "2026-11-01T12:00:00Z",
+        "data_source": "data/processed/dev_sample_300.jsonl",
+        "sample_size": 2,
+        "random_seed": 42,
+        "provider": "mock",
+        "model": "mock-model",
+        "raw_accuracy": 0.5,
+        "validated_accuracy": 0.5,
+        "raw_false_consensus_rate": 0.5,
+        "validated_false_consensus_rate": 0.0,
+        "total_downgrades": 1,
+        "downgrade_rate": 0.5,
+        "citation_stats": {"total_citations": 2, "valid_citations": 1, "unsupported_citations": 1, "validity_rate": 0.5},
+        "category_counts": {"CORRECTLY_GROUNDED": 1, "NEEDS_HUMAN_ADJUDICATION": 1},
+    }
+
+    audit_records = [
+        {
+            "claim_id": 1,
+            "claim": "Claim 1",
+            "gold_label": "SUPPORTS",
+            "raw_predicted_label": "SUPPORTS",
+            "predicted_label": "SUPPORTS",
+            "downgrade_applied": False,
+            "downgrade_reason": None,
+            "citation_validation_status": "VALID",
+            "error_category": "CORRECTLY_GROUNDED",
+            "needs_human_adjudication": False,
+            "cited_evidence": ["DocA:0"],
+            "valid_citations": ["DocA:0"],
+            "unsupported_citations": [],
+            "judge_rationale": "Valid support.",
+            "cited_passage_snippets": "DocA text",
+        },
+        {
+            "claim_id": 2,
+            "claim": "Ambiguous Claim 2",
+            "gold_label": "REFUTES",
+            "raw_predicted_label": "SUPPORTS",
+            "predicted_label": "NOT ENOUGH INFO",
+            "downgrade_applied": True,
+            "downgrade_reason": "Ambiguous evidence",
+            "citation_validation_status": "CONTRADICTORY_DIRECTION",
+            "error_category": "NEEDS_HUMAN_ADJUDICATION",
+            "needs_human_adjudication": True,
+            "cited_evidence": ["DocB:1"],
+            "valid_citations": ["DocB:1"],
+            "unsupported_citations": [],
+            "judge_rationale": "Contradictory rationale.",
+            "cited_passage_snippets": "DocB text",
+        },
+    ]
+
+    report_path = tmp_path / "test_report.md"
+    generate_markdown_report(summary, audit_records, report_path)
+
+    assert report_path.exists()
+    content = report_path.read_text(encoding="utf-8")
+    assert "ConsensusX: Evidence-Based Judge Citation & Error Audit Report" in content
+    assert "Cases Requiring Human Adjudication" in content
+    assert "Ambiguous Claim 2" in content
+    assert "CORRECTLY_GROUNDED" in content
+
+

@@ -13,6 +13,7 @@ from src.data.schema import (
     MajorityVotingOutput,
     DebateOutput,
     JudgeEvaluationOutput,
+    JudgeAuditCategory,
     AdaptiveStoppingResult,
     ConsensusXOutput,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "MajorityVotingOutput",
     "DebateOutput",
     "JudgeEvaluationOutput",
+    "JudgeAuditCategory",
     "AdaptiveStoppingResult",
     "ConsensusXOutput",
     "FEVERDataLoader",

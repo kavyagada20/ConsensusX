@@ -172,10 +172,23 @@ class DebateOutput(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class JudgeAuditCategory(str, Enum):
+    """Fine-grained audit categories for judge decisions and failure modes."""
+    CORRECTLY_GROUNDED = "CORRECTLY_GROUNDED"
+    APPROPRIATE_ABSTENTION = "APPROPRIATE_ABSTENTION"
+    UNSUPPORTED_VERDICT = "UNSUPPORTED_VERDICT"
+    INVALID_CITATION_ID = "INVALID_CITATION_ID"
+    IRRELEVANT_CITATION = "IRRELEVANT_CITATION"
+    WRONG_EVIDENCE_DIRECTION = "WRONG_EVIDENCE_DIRECTION"
+    MISSED_EVIDENCE = "MISSED_EVIDENCE"
+    NEEDS_HUMAN_ADJUDICATION = "NEEDS_HUMAN_ADJUDICATION"
+
+
 class JudgeEvaluationOutput(BaseModel):
     """Structured evaluation output returned by the Evidence-Based Judge."""
     claim_id: int
     predicted_label: FEVERLabel
+    raw_predicted_label: Optional[FEVERLabel] = None
     confidence: float = Field(ge=0.0, le=1.0, default=1.0)
     rationale: str = Field(default="", description="Reasoning explaining why evidence supports, refutes, or is insufficient.")
     cited_evidence: List[str] = Field(default_factory=list, description="Passage IDs cited by the judge.")
@@ -185,6 +198,11 @@ class JudgeEvaluationOutput(BaseModel):
     conflicting_evidence: Optional[str] = Field(default=None, description="Contradictions identified between evidence passages.")
     missing_evidence: bool = Field(default=False, description="Flag indicating if decisive evidence is missing.")
     uncertainty: str = Field(default="", description="Epistemic gaps, ambiguities, or reasons for doubt.")
+    downgrade_applied: bool = Field(default=False, description="Whether final verdict was downgraded to NEI during validation.")
+    downgrade_reason: Optional[str] = Field(default=None, description="Detailed explanation if verdict was downgraded.")
+    citation_validation_status: str = Field(default="VALID", description="Validation status: VALID, INVALID_ID, EMPTY_CITATIONS, IRRELEVANT, CONTRADICTORY.")
+    error_category: Optional[JudgeAuditCategory] = Field(default=None, description="Audited error category if applicable.")
+    needs_human_adjudication: bool = Field(default=False, description="Flag indicating case requiring human review.")
     status: str = Field(default="SUCCESS", description="Execution status: SUCCESS or FAILED.")
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
